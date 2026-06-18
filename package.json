@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "build:cf": "npx @opennextjs/cloudflare build",
+    "deploy:cf": "npx @opennextjs/cloudflare build && wrangler deploy"
   },
   "dependencies": {
     "lucide-react": "^1.21.0",
@@ -15,6 +17,7 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "^1.19.11",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
