@@ -1,2 +1,245 @@
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, -apple-system, sans-serif; }
+@import "tailwindcss";
+
+/* ──────────────────────────────────────────────
+   NEO-BRUTALISM — HyperAspect v2
+   ────────────────────────────────────────────── */
+
+:root {
+  --header-height: 80px;
+  --max-w: 1280px;
+
+  /* Colors */
+  --bg-base: #fef6e4; /* Warm cream */
+  --bg-surface: #fff; /* White for cards */
+  --text: #0a0a0a; /* Deep black */
+  --text-muted: #6b6b6b; /* Dark grey for secondary text */
+  --text-secondary: #0a0a0a;
+
+  --border: #0a0a0a; /* Black for borders */
+  --border-secondary: #e5e7eb; /* Light grey for subtle borders */
+  --border-width: 3px;
+
+  --accent: #ff0000; /* YouTube Red */
+  --yellow: #ffd60a;
+  --cyan: #00e5ff;
+  --lime: #b8ff00;
+  --pink: #ff6ec7;
+
+  /* Shadows */
+  --shadow: 4px 4px 0px var(--border);
+  --shadow-lg: 6px 6px 0px var(--border);
+
+  /* Fonts */
+  --font-display: 'Inter', sans-serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+/* Global resets for Neo-Brutalism effects */
+*, ::before, ::after {
+  box-sizing: border-box;
+  --tw-border-spacing-x: 0;
+  --tw-border-spacing-y: 0;
+  --tw-translate-x: 0;
+  --tw-translate-y: 0;
+  --tw-rotate: 0;
+  --tw-skew-x: 0;
+  --tw-skew-y: 0;
+  --tw-pan-x: ;
+  --tw-pan-y: ;
+  --tw-pinch-zoom: ;
+  --tw-scroll-snap-strictness: proximity;
+  --tw-gradient-from-position: ;
+  --tw-gradient-via-position: ;
+  --tw-gradient-to-position: ;
+  --tw-ordinal: ;
+  --tw-slashed-zero: ;
+  --tw-numeric-figure: ;
+  --tw-numeric-spacing: ;
+  --tw-numeric-fraction: ;
+  --tw-ring-inset: ;
+  --tw-ring-offset-width: 0px;
+  --tw-ring-offset-color: #fff;
+  --tw-ring-color: rgb(59 130 246 / 0.5);
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-shadow: 0 0 #0000; /* reset default tailwind shadow */
+  --tw-shadow-colored: 0 0 #0000; /* reset default tailwind shadow */
+  --tw-blur: ;
+  --tw-brightness: ;
+  --tw-contrast: ;
+  --tw-grayscale: ;
+  --tw-hue-rotate: ;
+  --tw-invert: ;
+  --tw-saturate: ;
+  --tw-sepia: ;
+  --tw-drop-shadow: ;
+  --tw-backdrop-blur: ;
+  --tw-backdrop-brightness: ;
+  --tw-backdrop-contrast: ;
+  --tw-backdrop-grayscale: ;
+  --tw-backdrop-hue-rotate: ;
+  --tw-backdrop-invert: ;
+  --tw-backdrop-opacity: ;
+  --tw-backdrop-saturate: ;
+  --tw-backdrop-sepia: ;
+  --tw-contain-size: ;
+  --tw-contain-layout: ;
+  --tw-contain-paint: ;
+  --tw-contain-style: ;
+}
+
+.section-label {
+  @apply text-sm font-black uppercase text-[var(--accent)] tracking-wide;
+}
+
+.input-base {
+  @apply w-full h-12 bg-white text-[var(--text)] rounded-none
+         border-[var(--border-width)] border-[var(--border)]
+         shadow-[var(--shadow)] outline-none
+         px-5 placeholder-[var(--text-muted)]
+         font-semibold text-base transition-all duration-200 ease-out
+         focus:shadow-[var(--shadow-lg)] focus:translate-x-[-2px] focus:translate-y-[-2px];
+}
+
+.input-base:disabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center px-6 py-3
+         text-[var(--bg-base)] text-lg font-black uppercase rounded-none
+         bg-[var(--accent)] border-[var(--border-width)] border-[var(--border)]
+         shadow-[var(--shadow)] transition-all duration-200 ease-out
+         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center px-6 py-3
+         text-[var(--text)] text-lg font-black uppercase rounded-none
+         bg-[var(--bg-surface)] border-[var(--border-width)] border-[var(--border)]
+         shadow-[var(--shadow)] transition-all duration-200 ease-out
+         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+}
+
+.nav-bar {
+  @apply fixed top-0 left-0 w-full z-50 flex items-center justify-between
+         h-[var(--header-height)] px-8 md:px-20 lg:px-32
+         bg-[var(--bg-base)] border-b-[var(--border-width)] border-[var(--border)]
+         shadow-[var(--shadow-lg)];
+}
+
+.logo {
+  @apply text-2xl font-black uppercase tracking-[-0.03em] flex items-center gap-2;
+}
+
+.hero-title {
+  @apply text-5xl md:text-6xl font-black uppercase tracking-[-0.03em];
+}
+
+.hero-subtitle {
+  @apply text-lg md:text-xl font-medium text-[var(--text-muted)] leading-relaxed;
+}
+
+.input-card {
+  @apply relative w-full aspect-[1/0.8] bg-[var(--yellow)] rounded-none
+         border-[var(--border-width)] border-[var(--border)] shadow-[var(--shadow)]
+         flex flex-col items-center justify-center text-center p-6 cursor-pointer
+         transition-all duration-200 ease-out
+         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+}
+
+.input-card-icon {
+  @apply mb-4 text-[var(--text)] w-12 h-12;
+}
+
+.input-card-title {
+  @apply text-xl font-black uppercase tracking-[-0.02em] mb-2;
+}
+
+.input-card-desc {
+  @apply text-sm text-[var(--text-muted)] font-medium leading-relaxed;
+}
+
+.video-card {
+  @apply relative w-full bg-[var(--bg-surface)] rounded-none
+         border-[var(--border-width)] border-[var(--border)] shadow-[var(--shadow)]
+         p-4 overflow-hidden cursor-pointer
+         transition-all duration-200 ease-out
+         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+}
+
+.video-card-thumbnail {
+  @apply w-full h-auto object-cover border-[var(--border-width)] border-[var(--border)] mb-4;
+}
+
+.video-card-title {
+  @apply text-base font-bold text-[var(--text)] mb-1;
+}
+
+.video-card-meta {
+  @apply text-xs font-semibold text-[var(--text-muted)] uppercase mb-2;
+}
+
+.video-card-format {
+  @apply inline-block px-2 py-1 bg-[var(--accent)] text-xs font-bold uppercase rounded-sm text-white;
+}
+
+.form-field-group {
+  @apply space-y-4 mb-8;
+}
+
+.form-field-label {
+  @apply block text-sm font-black uppercase text-[var(--text-muted)] mb-2;
+}
+
+.aspect-option {
+  @apply relative w-full border-[var(--border-width)] border-[var(--border)]
+         bg-[var(--bg-surface)] shadow-[var(--shadow)] flex flex-col items-center justify-center p-4
+         cursor-pointer transition-all duration-200 ease-out
+         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+}
+
+.aspect-option.selected {
+  @apply bg-[var(--yellow)] shadow-[var(--shadow-lg)] translate-x-[-2px] translate-y-[-2px];
+}
+
+.modal-overlay {
+  @apply fixed inset-0 bg-black/50 z-50 flex items-center justify-center;
+}
+
+.modal-content {
+  @apply bg-[var(--bg-base)] border-[var(--border-width)] border-[var(--border)] shadow-[var(--shadow-lg)]
+         max-w-xl w-full p-8 relative;
+}
+
+.modal-close-btn {
+  @apply absolute top-4 right-4 text-[var(--text)] hover:text-[var(--accent)];
+}
+
+.slide-up {
+  will-change: transform, opacity;
+  animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideUp {
+  0% {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.delay-1 { animation-delay: 0.1s; }
+.delay-2 { animation-delay: 0.2s; }
+.delay-3 { animation-delay: 0.3s; }
+.delay-4 { animation-delay: 0.4s; }
+.delay-5 { animation-delay: 0.5s; }

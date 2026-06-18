@@ -1,112 +1,85 @@
-'use client';
-
-import { useState, useEffect } from 'react';
-import { CREAM_BG, DARK_TEXT, BORDER, SHADOW_LG } from '@/lib/constants';
-
-const AUTH_PASSWORD = 'spacecubed';
-const STORAGE_KEY = 'hyperaspect-auth';
+"use client";
+import { useState, useEffect } from "react";
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
-  const [authorized, setAuthorized] = useState(false);
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [mounted, setMounted] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'true') {
-      setAuthorized(true);
-    }
+    // Check if cookie exists
+    const cookies = document.cookie.split(";");
+    const hasAuth = cookies.some(c => c.trim().startsWith("ha-auth=ok"));
+    setAuthed(hasAuth);
+    setChecking(false);
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === AUTH_PASSWORD) {
-      setAuthorized(true);
-      setError('');
-      localStorage.setItem(STORAGE_KEY, 'true');
-    } else {
-      setError('Incorrect password. Try again.');
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (res.ok) {
+        setAuthed(true);
+        setPw("");
+      } else {
+        setError("Wrong password");
+      }
+    } catch {
+      setError("Connection error");
     }
+    setLoading(false);
   };
 
-  // Avoid hydration mismatch — render nothing until mounted
-  if (!mounted) {
-    return null;
+  if (checking) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#fef6e4" }}>
+        <div style={{ width: 48, height: 48, border: "4px solid #0a0a0a", borderTopColor: "#ff2d2d", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+      </div>
+    );
   }
 
-  if (authorized) {
-    return <>{children}</>;
-  }
-
-  const gateStyle: React.CSSProperties = {
-    minHeight: '100vh',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: CREAM_BG,
-  };
-
-  const cardStyle: React.CSSProperties = {
-    backgroundColor: CREAM_BG,
-    border: BORDER,
-    boxShadow: SHADOW_LG,
-    padding: '2rem',
-    width: '100%',
-    maxWidth: '360px',
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '0.75rem',
-    border: BORDER,
-    backgroundColor: '#fff',
-    color: DARK_TEXT,
-    fontSize: '1rem',
-    outline: 'none',
-  };
-
-  const buttonStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '0.75rem',
-    border: BORDER,
-    backgroundColor: DARK_TEXT,
-    color: CREAM_BG,
-    fontSize: '1rem',
-    fontWeight: 700,
-    cursor: 'pointer',
-    textTransform: 'uppercase',
-  };
-
-  const errorStyle: React.CSSProperties = {
-    color: '#ff0000',
-    fontWeight: 700,
-    marginTop: '0.5rem',
-    fontSize: '0.875rem',
-  };
+  if (authed) return <>{children}</>;
 
   return (
-    <div style={gateStyle}>
-      <form onSubmit={handleSubmit} style={cardStyle}>
-        <h1 style={{ color: DARK_TEXT, fontSize: '1.5rem', fontWeight: 800, marginBottom: '1rem', textTransform: 'uppercase' }}>
-          HyperAspect
-        </h1>
-        <p style={{ color: DARK_TEXT, fontSize: '0.875rem', marginBottom: '1rem' }}>
-          Enter password to access the gallery.
-        </p>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#fef6e4", padding: "20px" }}>
+      <form onSubmit={handleSubmit} style={{ width: "100%", maxWidth: 400 }}>
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ width: 56, height: 56, background: "#ff2d2d", border: "3px solid #0a0a0a", boxShadow: "4px 4px 0 #0a0a0a", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+          </div>
+          <h1 style={{ fontSize: "1.75rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "-0.03em", color: "#0a0a0a", marginBottom: 8 }}>
+            hyper<span style={{ color: "#ff2d2d" }}>Aspect</span>
+          </h1>
+          <p style={{ fontSize: "0.875rem", color: "#6b6b6b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.02em" }}>
+            Enter password to access
+          </p>
+        </div>
         <input
           type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
           placeholder="Password"
-          style={{ ...inputStyle, marginBottom: '1rem' }}
           autoFocus
+          style={{ width: "100%", padding: "16px 20px", border: "3px solid #0a0a0a", background: "#fff", fontSize: "1rem", fontWeight: 500, outline: "none", boxShadow: "4px 4px 0 #0a0a0a", marginBottom: 16 }}
         />
-        <button type="submit" style={{ ...buttonStyle, boxShadow: SHADOW_LG, border: BORDER }}>
-          Enter
+        {error && (
+          <p style={{ color: "#ff2d2d", fontSize: "0.85rem", fontWeight: 700, marginBottom: 12, textAlign: "center" }}>{error}</p>
+        )}
+        <button
+          type="submit"
+          disabled={loading || !pw}
+          style={{ width: "100%", padding: "16px", background: "#ff2d2d", color: "#fef6e4", border: "3px solid #0a0a0a", fontWeight: 900, fontSize: "1rem", textTransform: "uppercase", cursor: loading || !pw ? "not-allowed" : "pointer", boxShadow: "4px 4px 0 #0a0a0a", opacity: loading || !pw ? 0.5 : 1 }}
+        >
+          {loading ? "Checking..." : "Enter"}
         </button>
-        {error && <p style={{ ...errorStyle, border: BORDER, padding: '0.5rem', marginTop: '1rem' }}>{error}</p>}
       </form>
     </div>
   );

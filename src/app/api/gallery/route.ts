@@ -1,77 +1,92 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 
-/**
- * GET /api/gallery
- * Returns the user's generated videos. This is mock/demo data — replace with
- * a real data source (database, object storage, etc.) when available.
- */
-export async function GET() {
-  const gallery = [
-    {
-      id: 'g1',
-      title: 'How Solar Panels Work',
-      thumbnail: 'https://picsum.photos/seed/solar/640/360',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      aspectRatio: '16:9' as const,
-      duration: '0:58',
-    },
-    {
-      id: 'g2',
-      title: 'Product Launch Teaser',
-      thumbnail: 'https://picsum.photos/seed/launch/360/640',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-      aspectRatio: '9:16' as const,
-      duration: '0:30',
-    },
-    {
-      id: 'g3',
-      title: 'Quarterly Recap',
-      thumbnail: 'https://picsum.photos/seed/recap/600/600',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-      aspectRatio: '1:1' as const,
-      duration: '1:12',
-    },
-    {
-      id: 'g4',
-      title: 'Recipe: 60-Second Pasta',
-      thumbnail: 'https://picsum.photos/seed/pasta/360/640',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-      aspectRatio: '9:16' as const,
-      duration: '0:45',
-    },
-    {
-      id: 'g5',
-      title: 'Startup Pitch Deck Walkthrough',
-      thumbnail: 'https://picsum.photos/seed/pitch/640/360',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-      aspectRatio: '16:9' as const,
-      duration: '1:45',
-    },
-    {
-      id: 'g6',
-      title: 'Brand Story Spotlight',
-      thumbnail: 'https://picsum.photos/seed/brand/600/600',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
-      aspectRatio: '1:1' as const,
-      duration: '0:52',
-    },
-    {
-      id: 'g7',
-      title: 'Travel Vlog: Mountain Escape',
-      thumbnail: 'https://picsum.photos/seed/travel/640/360',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4',
-      aspectRatio: '16:9' as const,
-      duration: '2:03',
-    },
-    {
-      id: 'g8',
-      title: 'Quick Tip: Keyboard Shortcuts',
-      thumbnail: 'https://picsum.photos/seed/tips/360/640',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-      aspectRatio: '9:16' as const,
-      duration: '0:22',
-    },
-  ];
+const JOBS_DIR = path.join(process.cwd(), "..", "..", "render-jobs");
+const OUTPUT_DIR = path.join(process.cwd(), "public", "outputs");
 
-  return NextResponse.json(gallery);
+type GalleryVideo = {
+  id: string;
+  title: string;
+  thumbnail: string;
+  url: string;
+};
+
+// Escape HTML special characters to prevent XSS in gallery titles
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+export async function GET(req: NextRequest) {
+  const videos: GalleryVideo[] = [];
+
+  // Always show curated demo videos first
+  videos.push(
+    { id: "demo1", title: "Coffee Shop Promo — 30s Ad", thumbnail: "/outputs/coffee-ad-thumb.jpg", url: "/outputs/coffee-ad-web.mp4" },
+    { id: "demo2", title: "Medieval Epic Trailer", thumbnail: "/outputs/templar-story-thumb.jpg", url: "/outputs/templar-story-web.mp4" },
+    { id: "demo3", title: "Animated Brand Series", thumbnail: "/outputs/cartoon-episode-thumb.jpg", url: "/outputs/cartoon-episode-web.mp4" }
+  );
+
+  // Append completed user jobs
+  try {
+    const jobFiles = fs.readdirSync(JOBS_DIR);
+    // Collect candidate jobs first so we can sort by modification time
+    const candidates: { jobId: string; mtime: number; title: string; thumbnail: string; url: string }[] = [];
+
+    for (const file of jobFiles) {
+      if (file.endsWith(".status")) {
+        const jobId = file.split(".")[0];
+        const statusFilePath = path.join(JOBS_DIR, file);
+        const jobSpecPath = path.join(JOBS_DIR, `${jobId}.json`);
+
+        try {
+          const statusData = fs.readFileSync(statusFilePath, "utf-8");
+          const jobStatus = JSON.parse(statusData);
+
+          if (jobStatus.status === "done" && jobStatus.resultUrl) {
+            let title = `Video ${jobId}`;
+            try {
+              const specData = fs.readFileSync(jobSpecPath, "utf-8");
+              const jobSpec = JSON.parse(specData);
+              title = jobSpec.brief?.input || jobSpec.inputValue || `Video ${jobId}`;
+              if (title.length > 50) title = title.substring(0, 47) + "...";
+            } catch {}
+
+            // Sanitize user-provided title to prevent XSS
+            title = escapeHtml(title);
+
+            // Get modification time for sorting (most recent first)
+            const stat = fs.statSync(statusFilePath);
+            candidates.push({
+              jobId,
+              mtime: stat.mtimeMs,
+              title,
+              thumbnail: `/outputs/${jobId}-thumb.jpg`,
+              url: jobStatus.resultUrl,
+            });
+          }
+        } catch {}
+      }
+    }
+
+    // Sort by most recent first
+    candidates.sort((a, b) => b.mtime - a.mtime);
+
+    // Limit to last 10 user jobs
+    for (const c of candidates.slice(0, 10)) {
+      videos.push({
+        id: c.jobId,
+        title: c.title,
+        thumbnail: c.thumbnail,
+        url: c.url,
+      });
+    }
+  } catch {}
+
+  return NextResponse.json({ videos });
 }
