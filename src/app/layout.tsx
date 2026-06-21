@@ -1,100 +1,103 @@
 import { Inter } from "next/font/google";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
+
+const SITE_URL = "https://video.coreaspectai.com";
+
+export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
+  alternates: {
+    canonical: SITE_URL,
+  },
+  title: "HyperAspect — AI Video Generator for Businesses & Creators",
+  description:
+    "Create professional videos in 30 seconds. Pick a template, describe your business, and get a polished video with narration, music, and captions. No editing skills required.",
+  keywords: [
+    "AI video generator",
+    "business video maker",
+    "marketing video",
+    "video creator",
+    "automated video production",
+    "social media video",
+    "product demo video",
+  ],
+  authors: [{ name: "Core Aspect" }],
+  creator: "Core Aspect",
+  openGraph: {
+    title: "HyperAspect — AI Video Generator",
+    description:
+      "Create professional videos in 30 seconds. 50+ templates, AI narration, brand kit, one-click YouTube upload.",
+    url: "https://video.coreaspectai.com",
+    siteName: "HyperAspect",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "HyperAspect — AI Video Generator",
+      },
+    ],
+    locale: "en_US",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "HyperAspect — AI Video Generator",
+    description:
+      "Create professional videos in 30 seconds. 50+ templates, AI narration, brand kit.",
+    images: ["/og-image.png"],
+  },
+  icons: {
+    icon: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
+  },
+  manifest: "/manifest.json",
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0f0f0f",
+  width: "device-width",
+  initialScale: 1,
+};
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <style dangerouslySetInnerHTML={{
-          __html: `
-            :root {
-              --header-height: 80px;
-              --max-w: 1280px;
-              --bg-base: #fef6e4;
-              --bg-surface: #fff;
-              --text: #0a0a0a;
-              --text-muted: #6b6b6b;
-              --text-secondary: #0a0a0a;
-              --border: #0a0a0a;
-              --border-secondary: #e5e7eb;
-              --border-width: 3px;
-              --accent: #ff0000;
-              --yellow: #ffd60a;
-              --cyan: #00e5ff;
-              --lime: #b8ff00;
-              --pink: #ff6ec7;
-              --shadow: 4px 4px 0px var(--border);
-              --shadow-lg: 6px 6px 0px var(--border);
-              --font-display: 'Inter', sans-serif;
-              --font-body: 'Inter', sans-serif;
-            }
-            body {
-              background-color: var(--bg-base);
-              color: var(--text);
-              font-family: var(--font-body);
-              margin: 0;
-              padding: 0;
-            }
-            *,
-            *::before,
-            *::after {
-              box-sizing: border-box;
-              --tw-border-spacing-x: 0;
-              --tw-border-spacing-y: 0;
-              --tw-translate-x: 0;
-              --tw-translate-y: 0;
-              --tw-rotate: 0;
-              --tw-skew-x: 0;
-              --tw-skew-y: 0;
-              --tw-scale-x: 1;
-              --tw-scale-y: 1;
-              --tw-pan-x: ;
-              --tw-pan-y: ;
-              --tw-pinch-zoom: ;
-              --tw-scroll-snap-strictness: proximity;
-              --tw-gradient-from-position: ;
-              --tw-gradient-via-position: ;
-              --tw-gradient-to-position: ;
-              --tw-ordinal: ;
-              --tw-slashed-zero: ;
-              --tw-numeric-figure: ;
-              --tw-numeric-spacing: ;
-              --tw-numeric-fraction: ;
-              --tw-ring-inset: ;
-              --tw-ring-offset-width: 0px;
-              --tw-ring-offset-color: #fff;
-              --tw-ring-color: rgb(59 130 246 / 0.5);
-              --tw-ring-offset-shadow: 0 0 #0000;
-              --tw-ring-shadow: 0 0 #0000;
-              --tw-shadow: 0 0 #0000;
-              --tw-shadow-colored: 0 0 #0000;
-              --tw-blur: ;
-              --tw-brightness: ;
-              --tw-contrast: ;
-              --tw-grayscale: ;
-              --tw-hue-rotate: ;
-              --tw-invert: ;
-              --tw-saturate: ;
-              --tw-sepia: ;
-              --tw-drop-shadow: ;
-              --tw-backdrop-blur: ;
-              --tw-backdrop-brightness: ;
-              --tw-backdrop-contrast: ;
-              --tw-backdrop-grayscale: ;
-              --tw-backdrop-hue-rotate: ;
-              --tw-backdrop-invert: ;
-              --tw-backdrop-opacity: ;
-              --tw-backdrop-saturate: ;
-              --tw-backdrop-sepia: ;
-              --tw-contain-size: ;
-              --tw-contain-layout: ;
-              --tw-contain-paint: ;
-              --tw-contain-style: ;
-            }
-          `
-        }} />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "WebApplication",
+              name: "HyperAspect",
+              applicationCategory: "MultimediaApplication",
+              operatingSystem: "Web",
+              offers: {
+                "@type": "Offer",
+                price: "0",
+                priceCurrency: "USD",
+              },
+              creator: {
+                "@type": "Organization",
+                name: "Core Aspect",
+                url: "https://coreaspectai.com",
+              },
+            }),
+          }}
+        />
       </head>
       <body className={inter.className}>{children}</body>
     </html>

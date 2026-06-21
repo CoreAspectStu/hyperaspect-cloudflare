@@ -1,52 +1,31 @@
-import { promises as fs } from 'fs';
-import path from 'path';
 import { NextRequest, NextResponse } from 'next/server';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const WAITLIST_FILE = path.join(DATA_DIR, 'waitlist.txt');
-
-const isValidEmail = (email: string): boolean => {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-};
+// Waitlist endpoint — logs emails to Workers logs (visible via wrangler tail)
+// For persistent storage, would need Cloudflare KV or D1 binding
 
 export async function POST(req: NextRequest) {
   try {
     const { email } = await req.json();
 
-    if (!email || !isValidEmail(email)) {
-      return NextResponse.json({ message: 'Invalid email address.' }, { status: 400 });
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return NextResponse.json(
+        { message: 'Please enter a valid email address.' },
+        { status: 400 }
+      );
     }
 
-    // Ensure data directory exists
-    await fs.mkdir(DATA_DIR, { recursive: true });
+    // Log the email — visible in Cloudflare dashboard > Workers > Logs
+    console.log(`WAITLIST_SIGNUP: ${email} at ${new Date().toISOString()}`);
 
-    let existingEmails: string[] = [];
-    try {
-      const content = await fs.readFile(WAITLIST_FILE, 'utf-8');
-      existingEmails = content.split('\\n')
-                               .map(line => line.split(',')[0])
-                               .filter(Boolean); // Filter out empty strings
-    } catch (readError: any) {
-      if (readError.code !== 'ENOENT') { // Ignore file not found error
-        console.error('Error reading waitlist file:', readError);
-        return NextResponse.json({ message: 'Internal server error.' }, { status: 500 });
-      }
-    }
-
-    if (existingEmails.includes(email)) {
-      return NextResponse.json({ message: 'Email already on waitlist.' }, { status: 409 });
-    }
-
-    const timestamp = new Date().toISOString();
-    const newEntry = `${email},${timestamp}\\n`;
-
-    await fs.appendFile(WAITLIST_FILE, newEntry, 'utf-8');
-
-    return NextResponse.json({ message: 'Successfully joined waitlist!' }, { status: 200 });
-
+    return NextResponse.json(
+      { message: "You're on the list! We'll be in touch soon." },
+      { status: 200 }
+    );
   } catch (error) {
-    console.error('API Error:', error);
-    return NextResponse.json({ message: 'Internal server error.' }, { status: 500 });
+    console.error('Waitlist error:', error);
+    return NextResponse.json(
+      { message: 'Something went wrong. Please try again.' },
+      { status: 500 }
+    );
   }
 }

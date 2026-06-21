@@ -17,7 +17,7 @@
 
   --border: #0a0a0a; /* Black for borders */
   --border-secondary: #e5e7eb; /* Light grey for subtle borders */
-  --border-width: 3px;
+  --border-width: 4px; /* Increased border width */
 
   --accent: #ff0000; /* YouTube Red */
   --yellow: #ffd60a;
@@ -25,9 +25,9 @@
   --lime: #b8ff00;
   --pink: #ff6ec7;
 
-  /* Shadows */
-  --shadow: 4px 4px 0px var(--border);
-  --shadow-lg: 6px 6px 0px var(--border);
+  /* Hard Shadows for brutalism */
+  --shadow: 6px 6px 0px #0a0a0a; /* Increased offset, hard black shadow */
+  --shadow-lg: 10px 10px 0px #0a0a0a; /* Larger offset, hard black shadow */
 
   /* Fonts */
   --font-display: 'Inter', sans-serif;
@@ -100,7 +100,6 @@ body {
 
 .input-base {
   @apply w-full h-12 bg-white text-[var(--text)] rounded-none
-         border-[var(--border-width)] border-[var(--border)]
          shadow-[var(--shadow)] outline-none
          px-5 placeholder-[var(--text-muted)]
          font-semibold text-base transition-all duration-200 ease-out
@@ -114,24 +113,21 @@ body {
 .btn-primary {
   @apply inline-flex items-center justify-center px-6 py-3
          text-[var(--bg-base)] text-lg font-black uppercase rounded-none
-         bg-[var(--accent)] border-[var(--border-width)] border-[var(--border)]
-         shadow-[var(--shadow)] transition-all duration-200 ease-out
+         bg-[var(--accent)] shadow-[var(--shadow)] transition-all duration-200 ease-out
          hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
 }
 
 .btn-secondary {
   @apply inline-flex items-center justify-center px-6 py-3
          text-[var(--text)] text-lg font-black uppercase rounded-none
-         bg-[var(--bg-surface)] border-[var(--border-width)] border-[var(--border)]
-         shadow-[var(--shadow)] transition-all duration-200 ease-out
+         bg-[var(--bg-surface)] shadow-[var(--shadow)] transition-all duration-200 ease-out
          hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
 }
 
 .nav-bar {
   @apply fixed top-0 left-0 w-full z-50 flex items-center justify-between
          h-[var(--header-height)] px-8 md:px-20 lg:px-32
-         bg-[var(--bg-base)] border-b-[var(--border-width)] border-[var(--border)]
-         shadow-[var(--shadow-lg)];
+         bg-[var(--bg-base)] shadow-[var(--shadow-lg)];
 }
 
 .logo {
@@ -147,35 +143,76 @@ body {
 }
 
 .input-card {
-  @apply relative w-full aspect-[1/0.8] bg-[var(--yellow)] rounded-none
-         border-[var(--border-width)] border-[var(--border)] shadow-[var(--shadow)]
-         flex flex-col items-center justify-center text-center p-6 cursor-pointer
-         transition-all duration-200 ease-out
-         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+  position: relative;
+  width: 100%;
+  height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 20px 16px;
+  cursor: pointer;
+  transition: box-shadow 0.2s ease-out, transform 0.2s ease-out;
+  border-width: 4px !important;
+  border-style: solid !important;
+  border-color: #0a0a0a !important;
+  box-shadow: 6px 6px 0px #0a0a0a !important;
+  overflow: hidden;
+  color: #ffffff !important;
+}
+
+.input-card:hover {
+  box-shadow: 10px 10px 0px #0a0a0a !important;
+  transform: translate(-3px, -3px);
+}
+
+.input-card:active {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0px #0a0a0a !important;
 }
 
 .input-card-icon {
-  @apply mb-4 text-[var(--text)] w-12 h-12;
+  margin-bottom: 14px;
+  width: 44px;
+  height: 44px;
+  color: #ffffff !important;
 }
 
 .input-card-title {
-  @apply text-xl font-black uppercase tracking-[-0.02em] mb-2;
+  font-size: 1.1rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+  color: #ffffff !important;
 }
 
 .input-card-desc {
-  @apply text-sm text-[var(--text-muted)] font-medium leading-relaxed;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.85) !important;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .video-card {
-  @apply relative w-full bg-[var(--bg-surface)] rounded-none
-         border-[var(--border-width)] border-[var(--border)] shadow-[var(--shadow)]
+  @apply relative w-full rounded-none
          p-4 overflow-hidden cursor-pointer
          transition-all duration-200 ease-out
-         hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
+         hover:translate-x-[-2px] hover:translate-y-[-2px];
+  background-color: #ffffff !important;
+  box-shadow: 6px 6px 0px #0a0a0a !important;
+}
+
+.video-card:hover {
+  box-shadow: 10px 10px 0px #0a0a0a !important;
 }
 
 .video-card-thumbnail {
-  @apply w-full h-auto object-cover border-[var(--border-width)] border-[var(--border)] mb-4;
+  @apply w-full h-auto object-cover mb-4;
+  border-width: 4px !important;
+  border-style: solid !important;
+  border-color: #0a0a0a !important;
 }
 
 .video-card-title {
@@ -199,8 +236,7 @@ body {
 }
 
 .aspect-option {
-  @apply relative w-full border-[var(--border-width)] border-[var(--border)]
-         bg-[var(--bg-surface)] shadow-[var(--shadow)] flex flex-col items-center justify-center p-4
+  @apply relative w-full bg-[var(--bg-surface)] shadow-[var(--shadow)] flex flex-col items-center justify-center p-4
          cursor-pointer transition-all duration-200 ease-out
          hover:shadow-[var(--shadow-lg)] hover:translate-x-[-2px] hover:translate-y-[-2px];
 }
@@ -214,7 +250,7 @@ body {
 }
 
 .modal-content {
-  @apply bg-[var(--bg-base)] border-[var(--border-width)] border-[var(--border)] shadow-[var(--shadow-lg)]
+  @apply bg-[var(--bg-base)] shadow-[var(--shadow-lg)]
          max-w-xl w-full p-8 relative;
 }
 
@@ -524,6 +560,12 @@ body {
   gap: 16px;
 }
 
+@media (max-width: 480px) {
+  .aspect-selector {
+    grid-template-columns: 1fr;
+  }
+}
+
 .aspect-option-shape {
   background: var(--text);
   border: 2px solid var(--border);
@@ -635,4 +677,26 @@ button[class*="bg-[var(--accent)]"] {
 
 button[class*="bg-[var(--accent)]"]:hover {
   box-shadow: 6px 6px 0px #0a0a0a !important;
+}
+/* ──────────────────────────────────────────────
+   BRUTALIST BORDER FIX — Tailwind v4 var() in border-[...] doesn't resolve
+   These explicit declarations ensure borders render correctly
+   ────────────────────────────────────────────── */
+.input-base, .btn-primary, .btn-secondary, .input-card, .video-card,
+.aspect-option, .modal-content, .configure-header-icon, .nav-logo-icon,
+.input-card-icon-wrap, .video-card-play-icon, .chat-bubble-ai, .chat-bubble-user,
+.chip, .style-choice, .video-card-thumbnail, .badge {
+  border-width: 4px !important;
+  border-style: solid !important;
+  border-color: #0a0a0a !important;
+}
+
+.nav-bar {
+  border-bottom-width: 4px !important;
+  border-bottom-style: solid !important;
+  border-bottom-color: #0a0a0a !important;
+}
+
+.modal-close-btn {
+  border: 4px solid #0a0a0a !important;
 }
