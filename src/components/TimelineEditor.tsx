@@ -36,6 +36,7 @@ import {
   Move,
   ScanSearch,
 } from "lucide-react";
+import type { Slot, Track } from "@/lib/template-store/types";
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Types
@@ -52,6 +53,9 @@ export interface TimelineBeat {
   /** Original scene metadata, preserved if present. */
   type?: string;
   slots?: Record<string, unknown>;
+  /** Native template model: the scene this beat mirrors + its typed media tracks. */
+  sceneId?: string;
+  tracks?: Track[];
 }
 
 export interface TimelineManifest {
@@ -65,12 +69,19 @@ export interface TimelineManifest {
   music_track: MusicTrack;
   sfx_enabled: boolean;
   beats: TimelineBeat[];
+  /** Native template model (D3): per-client editable values + their schema. */
+  templateId?: string;
+  slots?: Slot[];
+  slotValues?: Record<string, string | number>;
   /** Preserve any unknown top-level keys from the server. */
   [key: string]: unknown;
 }
 
 export interface TimelineEditorProps {
-  jobId: string;
+  /** Render-job id (post-generation). Optional: a bare templateId also loads a template. */
+  jobId?: string;
+  /** Template id to load via native /api/studio/template/[id]. Falls back to jobId. */
+  templateId?: string;
   onClose: () => void;
 }
 
@@ -117,7 +128,7 @@ type MusicTrack =
   | "hiphop-grit"
   | "acoustic-warm";
 
-type TabKey = "beats" | "style" | "audio";
+type TabKey = "beats" | "style" | "audio" | "slots";
 
 /* ── HyperFrames Inspector issue shape (from `hyperframes inspect --json`) ── */
 interface InspectIssue {
@@ -205,6 +216,16 @@ const MUSIC_OPTIONS: { value: MusicTrack; label: string }[] = [
   { value: "acoustic-warm", label: "Acoustic Warm" },
 ];
 
+/** Emoji per native track type (template-store/types TrackType). */
+const TRACK_ICON: Record<string, string> = {
+  video: "🎞️",
+  image: "🖼️",
+  text: "🔤",
+  speech: "🗣️",
+  audio: "🎵",
+  transition: "✂️",
+};
+
 /* ════════════════════════════════════════════════════════════════════════════
  * Style constants (neo-brutalist design system)
  * ════════════════════════════════════════════════════════════════════════════ */
@@ -259,95 +280,77 @@ function defaultManifest(): TimelineManifest {
   };
 }
 
-/* ════════════════════════════════════════════════════════════════════════════
- * Manifest normalizer — coerces an arbitrary server response into our shape.
- * Server manifests use `scenes` with `duration_sec`; we map to `beats`.
- * ════════════════════════════════════════════════════════════════════════════ */
 
-function normalizeManifest(raw: unknown): TimelineManifest {
+
+/**
+ * Map a native Template (GET /api/studio/template/[id]) into our editor shape.
+ * The template carries scenes (typed tracks) + slots (the per-client DEAL block).
+ * We project scenes → beats with real durations and surface slots/slotValues for
+ * the Slots tab. Style/audio keep editor defaults until the edit route persists
+ * them (brick 5).
+ */
+function normalizeTemplate(raw: unknown): TimelineManifest {
   const def = defaultManifest();
   if (!raw || typeof raw !== "object") return def;
-  const r = raw as Record<string, unknown>;
+  const t = raw as Record<string, unknown>;
 
-  // Detect beats either at top-level `beats` or inside `scenes`.
-  const rawBeats: unknown[] =
-    Array.isArray(r.beats)
-      ? r.beats
-      : Array.isArray(r.scenes)
-        ? r.scenes
-        : Array.isArray((r.manifest as Record<string, unknown> | undefined)?.beats)
-          ? ((r.manifest as Record<string, unknown>).beats as unknown[])
-          : Array.isArray((r.manifest as Record<string, unknown> | undefined)?.scenes)
-            ? ((r.manifest as Record<string, unknown>).scenes as unknown[])
-            : [];
-
-  const beats: TimelineBeat[] = rawBeats.length
-    ? rawBeats.map((b, i) => normalizeBeat(b, i))
+  const rawScenes = Array.isArray(t.scenes) ? (t.scenes as Record<string, unknown>[]) : [];
+  const beats: TimelineBeat[] = rawScenes.length
+    ? rawScenes.map((s, i) => {
+        const duration = typeof s.duration === "number" ? s.duration : 4;
+        const tracks = Array.isArray(s.tracks) ? (s.tracks as Track[]) : [];
+        const id = (s.id as string) || `scene-${i + 1}`;
+        return {
+          id,
+          sceneId: id,
+          headline: `Scene ${i + 1}`,
+          subtext: "",
+          duration,
+          layout: "hero" as BeatLayout,
+          caption_style: "highlight" as CaptionStyle,
+          transition: "fade" as BeatTransition,
+          tracks,
+        };
+      })
     : def.beats;
 
+  const rawSlots = Array.isArray(t.slots) ? (t.slots as Slot[]) : [];
+  const slotValues: Record<string, string | number> = {};
+  for (const s of rawSlots) {
+    slotValues[s.id] = s.default ?? "";
+  }
+
   return {
-    jobId: (r.jobId as string) || (r.id as string) || undefined,
-    title: (r.title as string) || def.title!,
-    aspect_ratio: (r.aspect_ratio as string) || (r.aspectRatio as string) || def.aspect_ratio!,
-    style_preset: (coerceEnum(r.style_preset ?? r.stylePreset, STYLE_PRESETS) as StylePreset) || def.style_preset,
-    primary_color: (r.primary_color as string) || (r.primaryColor as string) || def.primary_color,
-    background_color: (r.background_color as string) || (r.backgroundColor as string) || def.background_color,
-    narration_voice: (coerceEnum(r.narration_voice ?? r.narrationVoice, VOICE_OPTIONS) as NarrationVoice) || def.narration_voice,
-    music_track: (coerceEnum(r.music_track ?? r.musicTrack, MUSIC_OPTIONS) as MusicTrack) || def.music_track,
-    sfx_enabled: typeof r.sfx_enabled === "boolean" ? r.sfx_enabled : typeof r.sfxEnabled === "boolean" ? r.sfxEnabled : def.sfx_enabled,
+    jobId: def.jobId,
+    templateId: (t.id as string) || undefined,
+    title: (t.name as string) || def.title!,
+    aspect_ratio: def.aspect_ratio!,
+    style_preset: def.style_preset,
+    primary_color: def.primary_color,
+    background_color: def.background_color,
+    narration_voice: def.narration_voice,
+    music_track: def.music_track,
+    sfx_enabled: def.sfx_enabled,
     beats,
+    slots: rawSlots.length ? rawSlots : undefined,
+    slotValues: rawSlots.length ? slotValues : undefined,
   };
 }
 
-function normalizeBeat(raw: unknown, index: number): TimelineBeat {
-  const b = (raw || {}) as Record<string, unknown>;
-  const slots = (b.slots as Record<string, unknown> | undefined) || {};
-
-  return {
-    id: (b.id as string) || `beat-${index + 1}`,
-    headline:
-      (b.headline as string) ||
-      (b.title as string) ||
-      (slots.headline as string) ||
-      (slots.text as string) ||
-      (slots.title as string) ||
-      `Beat ${index + 1}`,
-    subtext:
-      (b.subtext as string) ||
-      (b.narration as string) ||
-      (b.subtitle as string) ||
-      (slots.subtext as string) ||
-      (slots.narration as string) ||
-      (slots.subtitle as string) ||
-      "",
-    duration:
-      typeof b.duration === "number"
-        ? b.duration
-        : typeof b.duration_sec === "number"
-          ? b.duration_sec
-          : 4,
-    layout: (coerceEnum(b.layout ?? b.type, LAYOUT_OPTIONS) as BeatLayout) || "hero",
-    caption_style: (coerceEnum(b.caption_style ?? b.captionStyle, CAPTION_OPTIONS) as CaptionStyle) || "highlight",
-    transition: (coerceEnum(b.transition, TRANSITION_OPTIONS) as BeatTransition) || "fade",
-    type: (b.type as string) || undefined,
-    slots: Object.keys(slots).length ? slots : undefined,
-  };
-}
-
-function coerceEnum(
-  value: unknown,
-  options: { value: string }[],
-): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const match = options.find((o) => o.value.toLowerCase() === value.toLowerCase());
-  return match?.value;
+/** Coerce arbitrary input to a valid #rrggbb for <input type="color">. */
+function normalizeHex(v: string): string {
+  let c = (v || "").trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{3}$/.test(c)) {
+    c = c.split("").map((ch) => ch + ch).join("");
+  }
+  return /^[0-9a-fA-F]{6}$/.test(c) ? `#${c.toLowerCase()}` : "#000000";
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Component
  * ════════════════════════════════════════════════════════════════════════════ */
 
-export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) {
+export default function TimelineEditor({ jobId, templateId, onClose }: TimelineEditorProps) {
   const [manifest, setManifest] = useState<TimelineManifest | null>(null);
   const [selectedBeat, setSelectedBeat] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("beats");
@@ -362,28 +365,36 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
   const [inspectReport, setInspectReport] = useState<InspectReport | null>(null);
   const [inspectError, setInspectError] = useState<string | null>(null);
 
-  /* ── Load manifest on mount ── */
+  /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
     let cancelled = false;
+    const id = templateId ?? jobId;
     (async () => {
+      if (!id) {
+        if (!cancelled) {
+          setLoadError("No template or job id supplied. Starting with defaults.");
+          setManifest(defaultManifest());
+        }
+        return;
+      }
       try {
-        const res = await fetch(`/api/manifest?jobId=${encodeURIComponent(jobId)}`);
+        const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}`);
         if (!res.ok) {
           // Gracefully fall back to a default manifest so the editor is still usable.
           if (!cancelled) {
-            setLoadError(`Could not load manifest (HTTP ${res.status}). Starting with defaults.`);
+            setLoadError(`Could not load template "${id}" (HTTP ${res.status}). Starting with defaults.`);
             setManifest(defaultManifest());
           }
           return;
         }
         const data = await res.json();
         if (!cancelled) {
-          setManifest(normalizeManifest(data));
+          setManifest(normalizeTemplate(data));
         }
       } catch (e) {
         if (!cancelled) {
           setLoadError(
-            e instanceof Error ? e.message : "Failed to load manifest.",
+            e instanceof Error ? e.message : "Failed to load template.",
           );
           setManifest(defaultManifest());
         }
@@ -392,7 +403,7 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [templateId, jobId]);
 
   /* ── Body scroll lock while modal is open ── */
   useEffect(() => {
@@ -439,6 +450,14 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
     [],
   );
 
+  const updateSlot = useCallback((id: string, value: string | number) => {
+    setManifest((prev) =>
+      prev && prev.slotValues
+        ? { ...prev, slotValues: { ...prev.slotValues, [id]: value } }
+        : prev,
+    );
+  }, []);
+
   const addBeat = useCallback(() => {
     setManifest((prev) => {
       if (!prev) return prev;
@@ -484,6 +503,10 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
   /* ══ HyperFrames Inspector ══ */
   const handleInspect = useCallback(async () => {
     if (isInspecting) return;
+    if (!jobId) {
+      setInspectError("Inspect requires a rendered job — not available for a bare template.");
+      return;
+    }
     setIsInspecting(true);
     setInspectError(null);
     setInspectReport(null);
@@ -514,6 +537,10 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
   /* ══ Re-render ══ */
   const handleRerender = useCallback(async () => {
     if (!manifest || isRerendering) return;
+    if (!jobId) {
+      setRenderError("Re-render requires a rendered job — not available for a bare template.");
+      return;
+    }
     setIsRerendering(true);
     setRenderError(null);
     setRenderSuccess(null);
@@ -567,7 +594,11 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
                 Timeline Editor
               </div>
               <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "2px" }}>
-                Job: <span style={{ fontFamily: "monospace" }}>{jobId.slice(0, 12)}…</span>
+                {manifest?.title
+                  ? manifest.title
+                  : jobId
+                    ? `Job: ${jobId.slice(0, 12)}…`
+                    : templateId || "Editor"}
               </div>
             </div>
           </div>
@@ -667,6 +698,9 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
               <TabButton active={activeTab === "beats"} onClick={() => setActiveTab("beats")} icon={<Layers size={16} />} label="Beats" />
               <TabButton active={activeTab === "style"} onClick={() => setActiveTab("style")} icon={<Palette size={16} />} label="Style" />
               <TabButton active={activeTab === "audio"} onClick={() => setActiveTab("audio")} icon={<Music size={16} />} label="Audio" />
+              {manifest.slots?.length ? (
+                <TabButton active={activeTab === "slots"} onClick={() => setActiveTab("slots")} icon={<Type size={16} />} label={`Slots (${manifest.slots.length})`} />
+              ) : null}
             </div>
 
             {/* ════ TAB CONTENT ════ */}
@@ -694,6 +728,13 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
                   onChange={(patch) => setManifest((prev) => (prev ? { ...prev, ...patch } : prev))}
                 />
               )}
+              {activeTab === "slots" && manifest.slots && manifest.slotValues && (
+                <SlotsTab
+                  slots={manifest.slots}
+                  values={manifest.slotValues}
+                  onChange={updateSlot}
+                />
+              )}
             </div>
 
             {/* ════ FOOTER: re-render + status ════ */}
@@ -716,13 +757,17 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
                 <button
                   type="button"
                   onClick={handleInspect}
-                  disabled={isInspecting}
+                  disabled={isInspecting || !jobId}
                   style={{
                     ...inspectBtnStyle,
-                    opacity: isInspecting ? 0.7 : 1,
-                    cursor: isInspecting ? "not-allowed" : "pointer",
+                    opacity: isInspecting || !jobId ? 0.7 : 1,
+                    cursor: isInspecting || !jobId ? "not-allowed" : "pointer",
                   }}
-                  title="Run HyperFrames Inspector — audit for overflow, contrast, and layout issues"
+                  title={
+                    jobId
+                      ? "Run HyperFrames Inspector — audit for overflow, contrast, and layout issues"
+                      : "Inspect requires a rendered job"
+                  }
                 >
                   {isInspecting ? (
                     <>
@@ -738,12 +783,13 @@ export default function TimelineEditor({ jobId, onClose }: TimelineEditorProps) 
                 <button
                   type="button"
                   onClick={handleRerender}
-                  disabled={isRerendering}
+                  disabled={isRerendering || !jobId}
                   style={{
                     ...renderBtnStyle,
-                    opacity: isRerendering ? 0.7 : 1,
-                    cursor: isRerendering ? "not-allowed" : "pointer",
+                    opacity: isRerendering || !jobId ? 0.7 : 1,
+                    cursor: isRerendering || !jobId ? "not-allowed" : "pointer",
                   }}
+                  title={jobId ? "Re-render the video with current edits" : "Re-render requires a rendered job"}
                 >
                   {isRerendering ? (
                     <>
@@ -1223,6 +1269,25 @@ function BeatsTab({
                 ))}
               </select>
             </Field>
+
+            {/* Scene tracks — native template model (read-only this brick) */}
+            {beat.tracks && beat.tracks.length > 0 && (
+              <div>
+                <div style={{ ...fieldLabelStyle, marginBottom: "6px" }}>Scene Tracks</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  {beat.tracks.map((tr) => (
+                    <div key={tr.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 10px", border: BORDER_SM, backgroundColor: COLORS.surface }}>
+                      <span style={{ fontSize: "0.95rem" }}>{TRACK_ICON[tr.type] ?? "•"}</span>
+                      <span style={{ fontSize: "0.58rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.04em", padding: "1px 6px", border: `2px solid ${COLORS.border}`, backgroundColor: COLORS.bg }}>{tr.type}</span>
+                      <span style={{ flex: 1, fontFamily: "monospace", fontSize: "0.7rem", color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tr.ref || tr.id}</span>
+                      {typeof tr.duration === "number" ? (
+                        <span style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted }}>{tr.duration}s</span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1385,6 +1450,80 @@ function AudioTab({
         <span style={{ fontSize: "0.7rem", fontWeight: 600, color: COLORS.textMuted }}>
           Adds whooshes, impacts, and UI sounds between beats.
         </span>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Sub-component: SlotsTab — edit the template's per-client slot values (D3/D4).
+ * Slot edits are deterministic and live in component state this brick; the edit
+ * route that persists them lands in brick 5.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+function SlotsTab({
+  slots,
+  values,
+  onChange,
+}: {
+  slots: Slot[];
+  values: Record<string, string | number>;
+  onChange: (id: string, value: string | number) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px", minHeight: "320px" }}>
+      <div style={{ fontSize: "0.7rem", fontWeight: 700, color: COLORS.textMuted }}>
+        {slots.length} template slots · edits are local until the save route ships (brick 5).
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "14px" }}>
+        {slots.map((slot) => {
+          const val = values[slot.id] ?? slot.default ?? "";
+          return (
+            <Field key={slot.id} label={slot.label}>
+              {slot.type === "color" ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <input
+                    type="color"
+                    value={normalizeHex(String(val))}
+                    onChange={(e) => onChange(slot.id, e.target.value)}
+                    style={colorInputStyle}
+                  />
+                  <input
+                    type="text"
+                    value={String(val)}
+                    onChange={(e) => onChange(slot.id, e.target.value)}
+                    spellCheck={false}
+                    style={{ ...inputStyle, width: "110px", fontFamily: "monospace", textTransform: "uppercase" }}
+                  />
+                </div>
+              ) : slot.type === "number" ? (
+                <input
+                  type="number"
+                  value={val === "" ? "" : Number(val)}
+                  onChange={(e) => onChange(slot.id, e.target.value === "" ? "" : Number(e.target.value))}
+                  style={inputStyle}
+                />
+              ) : slot.type === "select" && slot.options ? (
+                <select
+                  value={String(val)}
+                  onChange={(e) => onChange(slot.id, e.target.value)}
+                  style={{ ...inputStyle, cursor: "pointer" }}
+                >
+                  {slot.options.map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={String(val)}
+                  onChange={(e) => onChange(slot.id, e.target.value)}
+                  style={inputStyle}
+                />
+              )}
+            </Field>
+          );
+        })}
       </div>
     </div>
   );

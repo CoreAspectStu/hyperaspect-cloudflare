@@ -878,8 +878,8 @@ export default function ThematicEditor({ videoUrl, brief, templateId, jobId }: T
       `}</style>
 
       {/* Timeline Editor modal */}
-      {showTimeline && jobId && (
-        <TimelineEditor jobId={jobId} onClose={() => setShowTimeline(false)} />
+      {showTimeline && (jobId || templateId) && (
+        <TimelineEditor jobId={jobId} templateId={templateId} onClose={() => setShowTimeline(false)} />
       )}
     </div>
   );
