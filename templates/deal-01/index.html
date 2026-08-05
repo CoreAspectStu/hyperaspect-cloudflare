@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+/* ===========================================================================
+   CBRE — 11A Grand Ave, Camellia NSW 2142 · LEASED  (v2, client feedback)
+   30s · 1920x1080 · LinkedIn. Music only, no narration.
+
+   Kristie's reframe: "They aren't promoting the property, it's leased.
+   They're promoting the TRANSACTION." Building specs (clearance, zoning) are
+   OUT. Content is: address · building + site size · on behalf of · by CBRE.
+
+   Also per feedback: CBRE mark persistent across the whole run; LEASED lands
+   on the address card; agents bigger with real titles; scenes SLIDE right-to-
+   left, they do not fade.
+   =========================================================================== */
+:root{
+  --green:#003F2D;
+  --accent:#17E88F;
+  --ink:#1A1A1A;
+  --muted:#5A6A6C;
+  --grey:#CAD1D3;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1920px;height:1080px;overflow:hidden;background:#001A12;
+     font-family:'Inter',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+#root{position:relative;width:1920px;height:1080px;overflow:hidden}
+.base{position:absolute;inset:0;background:#001A12}
+
+.scene{position:absolute;inset:0;overflow:hidden}
+.slide{position:absolute;inset:0}          /* animated wrapper — slides R→L */
+.fill{position:absolute;inset:0}
+
+/* ---------- persistent CBRE bar (all 30s, never a clip) ---------- */
+.topbar{position:absolute;top:0;left:0;width:1920px;height:96px;background:var(--green);z-index:60}
+.topbar .mark{position:absolute;left:64px;top:50%;transform:translateY(-50%);width:168px}
+.topbar .mark img{width:100%;display:block}
+.topbar .sect{position:absolute;right:64px;top:50%;transform:translateY(-50%);
+  font-size:17px;font-weight:600;letter-spacing:.26em;color:var(--accent);text-transform:uppercase}
+.safe{position:absolute;left:0;right:0;top:96px;bottom:0}
+
+/* ---------- S1 address + LEASED ---------- */
+/* map lifted from .5 -> .95 and the vignette pulled back, so the streets and the
+   Parramatta river actually read (feedback: "needs to be a little more visible") */
+#s1 .map{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.95;
+         filter:brightness(1.55) contrast(1.18) saturate(.9)}
+#s1 .vig{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 45%,rgba(0,26,18,0) 0%,rgba(0,26,18,.55) 62%,rgba(0,26,18,.9) 100%)}
+/* flashing marker: bright core + halo, ring pulses on top */
+.marker{position:absolute;left:50%;top:44%;width:34px;height:34px;margin:-17px 0 0 -17px;
+        border-radius:50%;background:var(--accent);
+        box-shadow:0 0 0 7px rgba(23,232,143,.28), 0 0 44px 12px rgba(23,232,143,.85)}
+.ring{position:absolute;left:50%;top:44%;width:34px;height:34px;margin:-17px 0 0 -17px;
+      border-radius:50%;border:3px solid var(--accent)}
+/* left-aligned so the marker stays readable. The marker sits at map centre
+   because the tile is generated on the property's real coordinates — the text
+   moves, not the marker. */
+.s1wrap{position:absolute;left:110px;top:50%;transform:translateY(-50%);text-align:left}
+.s1eyebrow{font-size:21px;font-weight:600;letter-spacing:.36em;color:var(--accent);text-transform:uppercase}
+.s1addr{font-size:82px;font-weight:700;color:#fff;letter-spacing:-.015em;margin-top:22px}
+.s1sub{font-size:30px;font-weight:500;letter-spacing:.22em;color:var(--grey);margin-top:14px;text-transform:uppercase}
+.s1leased{font-size:186px;font-weight:900;color:#fff;letter-spacing:.03em;line-height:.96;margin-top:22px}
+.s1rule{height:5px;width:200px;background:var(--accent);margin:28px 0 0}
+
+/* ---------- S2 drone ---------- */
+.lower3{position:absolute;left:110px;bottom:120px;padding-left:28px;border-left:5px solid var(--accent)}
+.lower3 .l1{font-size:46px;font-weight:700;color:#fff}
+.lower3 .l2{font-size:24px;font-weight:500;letter-spacing:.2em;color:var(--grey);margin-top:9px;text-transform:uppercase}
+.botfade{position:absolute;left:0;right:0;bottom:0;height:460px;
+  background:linear-gradient(to bottom,rgba(0,26,18,0) 0%,rgba(0,26,18,.88) 100%)}
+
+/* ---------- S3 the numbers ---------- */
+#s3 .still{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#s3 .tint{position:absolute;inset:0;background:linear-gradient(100deg,rgba(0,42,45,.95) 0%,rgba(0,42,45,.86) 52%,rgba(0,42,45,.5) 100%)}
+.nums{position:absolute;left:110px;top:50%;transform:translateY(-50%)}
+.nums .hd{font-size:21px;font-weight:600;letter-spacing:.34em;color:var(--accent);text-transform:uppercase}
+.nrow{margin-top:46px}
+.nval{font-size:112px;font-weight:800;color:#fff;letter-spacing:-.03em;line-height:1}
+.nval .u{font-size:44px;font-weight:600;color:var(--accent);margin-left:12px}
+.nlab{font-size:26px;font-weight:500;letter-spacing:.2em;color:var(--grey);margin-top:8px;text-transform:uppercase}
+
+/* ---------- S4 LEASED / attribution ---------- */
+#s4 .fill{background:var(--green)}
+.s4wrap{position:absolute;inset:96px 0 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+/* rebalanced: LEASED pulled back, attribution block given real weight */
+.s4leased{font-size:196px;font-weight:900;color:#fff;letter-spacing:.035em;line-height:.94}
+.s4rule{height:5px;width:300px;background:var(--accent);margin-top:22px}
+.s4line{font-size:26px;font-weight:600;letter-spacing:.28em;color:var(--accent);margin-top:34px;text-transform:uppercase}
+.s4party{font-size:76px;font-weight:800;color:#fff;letter-spacing:.02em;margin-top:8px}
+.s4logo{margin-top:14px;width:440px;background:#fff;padding:22px 30px}
+.s4logo img{width:100%;display:block}
+
+/* ---------- S5 agents (BIGGER — "they're selling themselves") ---------- */
+#s5 .fill{background:#F4F6F6}
+/* THREE across, each in a framed card. 3x520 + 2x56 gap = 1672, centred
+   -> left edges 124 / 700 / 1276 */
+.agent{position:absolute;top:150px;width:520px;background:#fff;
+       border:1px solid #DDE3E4;box-shadow:0 3px 14px rgba(0,0,0,.06)}
+.agent .accent{height:8px;background:var(--green)}
+.agent .body{padding:24px 28px 28px}
+.vidbox{width:520px;height:400px;background:#7E97A1}
+/* portraits are 1176x784 (1.5) into a 1.3 box: cover crops horizontally only,
+   so the full head-to-torso framing survives on all three */
+.pv{position:absolute;top:158px;width:520px;height:400px;object-fit:cover;object-position:50% 50%}
+#s5-mike{left:124px}
+#s5-shaun{left:700px}
+#s5-tim{left:1276px}
+.aname{font-size:40px;font-weight:800;color:var(--ink);letter-spacing:-.015em}
+.arole{font-size:20px;font-weight:600;color:var(--green);margin-top:7px;letter-spacing:.01em;line-height:1.3}
+.acontact{margin-top:16px;padding-top:14px;border-top:1px solid #E4E9E9}
+.acontact div{font-size:27px;font-weight:500;color:var(--muted);line-height:1.55}
+
+/* ---------- S6 brand frame ---------- */
+#s6 .fill{background:var(--green)}
+.endwrap{position:absolute;inset:96px 0 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+/* "LEASED BY" then the logo beneath it — the logo IS the word CBRE, so
+   "Leased by CBRE" plus the mark was saying it twice. */
+.endlogo{width:420px;margin-top:30px}
+.endlogo img{width:100%;display:block}
+.endline{font-size:34px;font-weight:600;letter-spacing:.32em;color:var(--accent);text-transform:uppercase;text-align:center}
+.endaddr{font-size:23px;font-weight:500;letter-spacing:.18em;color:var(--grey);margin-top:44px;text-transform:uppercase;text-align:center}
+</style>
+</head>
+
+<body>
+<div id="root" data-composition-id="claude-leased-16x9" data-width="1920" data-height="1080" data-start="0" data-duration="30">
+  <div class="base"></div>
+
+  <!-- ================= S1 · ADDRESS + LEASED (0 - 4.5) ================= -->
+  <div id="s1" class="scene clip" data-start="0" data-duration="4.5" data-track-index="0">
+    <div class="slide">
+      <div class="fill">
+        <img class="map" id="s1-map" src="assets/map-z15.png" alt="">
+        <div class="vig"></div>
+        <div class="ring" id="s1-ring"></div>
+        <div class="marker" id="s1-dot"></div>
+        <div class="s1wrap">
+          <div class="s1eyebrow" id="s1-eb">Industrial &amp; Logistics</div>
+          <div class="s1addr" id="s1-addr">11A Grand Avenue</div>
+          <div class="s1sub" id="s1-sub">Camellia &middot; New South Wales 2142</div>
+          <div class="s1leased" id="s1-leased">LEASED</div>
+          <div class="s1rule" id="s1-rule"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S2 · DRONE (4.5 - 13.5) ================= -->
+  <video id="s2-video" class="clip" src="assets/video2.mp4"
+         data-start="4.5" data-duration="9" data-track-index="0"
+         muted playsinline
+         style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"></video>
+
+  <div id="s2ov" class="scene clip" data-start="4.5" data-duration="9" data-track-index="1">
+    <div class="fill" style="pointer-events:none">
+      <div class="botfade" id="s2-fade"></div>
+      <div class="lower3" id="s2-l3">
+        <div class="l1">11A Grand Avenue</div>
+        <div class="l2">Camellia &middot; NSW</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S3 · THE NUMBERS (13.5 - 19.0) ================= -->
+  <div id="s3" class="scene clip" data-start="13.5" data-duration="5.5" data-track-index="0">
+    <div class="slide">
+      <div class="fill">
+        <img class="still" id="s3-still" src="assets/drone-final.jpg" alt="">
+        <div class="tint"></div>
+        <div class="nums">
+          <div class="hd" id="s3-hd">The Asset</div>
+          <div class="nrow" id="s3-r1">
+            <div class="nval"><span id="s3-n1">0</span><span class="u">sqm</span></div>
+            <div class="nlab">Building area</div>
+          </div>
+          <div class="nrow" id="s3-r2">
+            <div class="nval"><span id="s3-n2">0</span><span class="u">sqm</span></div>
+            <div class="nlab">Site area</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S4 · LEASED + ATTRIBUTION (19.0 - 23.5) ================= -->
+  <div id="s4" class="scene clip" data-start="19" data-duration="4.5" data-track-index="0">
+    <div class="slide">
+      <div class="fill">
+        <div class="s4wrap">
+          <div class="s4leased" id="s4-word">LEASED</div>
+          <div class="s4rule" id="s4-rule"></div>
+          <div class="s4line" id="s4-l1">On behalf of</div>
+          <div class="s4logo" id="s4-logo"><img src="assets/wentworth-logo.jpg" alt="Wentworth Capital"></div>
+          <div class="s4line" id="s4-l2" style="margin-top:34px">Leased by</div>
+          <div class="s4party" id="s4-l3">CBRE</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S5 · AGENTS (23.5 - 28.5) ================= -->
+  <div id="s5" class="scene clip" data-start="23.5" data-duration="5" data-track-index="0">
+    <div class="slide">
+      <div class="fill">
+        <div class="agent" id="s5-a1" style="left:124px">
+          <div class="accent"></div>
+          <div class="vidbox"></div>
+          <div class="body">
+            <div class="aname">Michael O&rsquo;Neill</div>
+            <div class="arole">Regional Director, Industrial &amp; Logistics</div>
+            <div class="acontact"><div>0431 500 939</div><div>michael.oneill@cbre.com.au</div></div>
+          </div>
+        </div>
+        <div class="agent" id="s5-a2" style="left:700px">
+          <div class="accent"></div>
+          <div class="vidbox"></div>
+          <div class="body">
+            <div class="aname">Shaun Timbrell</div>
+            <div class="arole">Senior Director, Industrial &amp; Logistics</div>
+            <div class="acontact"><div>0433 302 979</div><div>shaun.timbrell@cbre.com.au</div></div>
+          </div>
+        </div>
+        <div class="agent" id="s5-a3" style="left:1276px">
+          <div class="accent"></div>
+          <div class="vidbox"></div>
+          <div class="body">
+            <div class="aname">Tim Forsyth</div>
+            <div class="arole">Manager, Industrial &amp; Logistics</div>
+            <!-- cbre.com (no .au) is CORRECT for Tim — legacy domain from length of
+                 service. Confirmed by Stu 2026-08-05. Do not "fix" it. -->
+            <div class="acontact"><div>0431 488 061</div><div>tim.forsyth@cbre.com</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- portraits: media cannot live inside a timed wrapper -> own clips, own tracks -->
+  <video id="s5-mike" class="clip pv" src="assets/michael-v2.mp4"
+         data-start="23.5" data-duration="5" data-track-index="2" muted playsinline></video>
+  <video id="s5-shaun" class="clip pv" src="assets/shaun-v2.mp4"
+         data-start="23.5" data-duration="5" data-track-index="3" muted playsinline></video>
+  <video id="s5-tim" class="clip pv" src="assets/tim-v2.mp4"
+         data-start="23.5" data-duration="5" data-track-index="4" muted playsinline></video>
+
+  <!-- ================= S6 · BRAND FRAME (28.5 - 30.0) ================= -->
+  <div id="s6" class="scene clip" data-start="28.5" data-duration="1.5" data-track-index="0">
+    <div class="slide">
+      <div class="fill">
+        <div class="endwrap">
+          <div class="endline" id="s6-line">Leased by</div>
+          <div class="endlogo" id="s6-logo"><img src="assets/cbre-logo-white.svg" alt="CBRE"></div>
+          <div class="endaddr" id="s6-addr">11A Grand Avenue, Camellia</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- persistent CBRE bar — sits above every scene for the full 30s -->
+  <div class="topbar">
+    <div class="mark"><img src="assets/cbre-logo-white.svg" alt="CBRE"></div>
+    <div class="sect">Advisory &amp; Transaction Services</div>
+  </div>
+
+  <!-- punchy-a: MusicGen stereo-large on Replicate GPU. Chosen on measurement —
+       loudness range 6.7 and crest 18.1 vs the previous track's 2.1 / 14.3, i.e.
+       3.2x the dynamic contrast. Alternatives punchy-b / punchy-c sit alongside it. -->
+  <audio id="bgm" src="assets/bgm/punchy-a.mp3" data-start="0" data-duration="30" data-track-index="10" data-volume="0.62"></audio>
+</div>
+
+<script>
+/* One paused timeline, built synchronously. Seek-safe: no clocks, no random,
+   no play() — HyperFrames owns media playback and .clip visibility. */
+/* ══ DEAL DATA — the single per-property edit point. ════════════════════════
+   Defaults are the confirmed Camellia / CBRE values (== the live cut), so an
+   unchanged DEAL reproduces the current render exactly. Re-cutting for a new
+   leased deal = edit these values (source of truth: ../../deal.json) and drop
+   the deal's assets into ./assets/ (same filenames, or edit the static src=).
+   Media src= is left static on purpose — text + brand + numbers are wired here. */
+const DEAL = {
+  deal_status: "LEASED",
+  property: { address1:"11A Grand Avenue", locality:"Camellia", region:"New South Wales", region_short:"NSW", postcode:"2142" },
+  areas: { building:6972, building_label:"Building area", site:8000, site_label:"Site area" },
+  client: { name:"Wentworth Capital", logo:"assets/wentworth-logo.jpg" },
+  agency: { name:"CBRE", logo_light:"assets/cbre-logo-white.svg", team:"Industrial & Logistics", service:"Advisory & Transaction Services" },
+  agents: [
+    { name:"Michael O'Neill", role:"Regional Director, Industrial & Logistics", phone:"0431 500 939", email:"michael.oneill@cbre.com.au", portrait:"assets/michael-v2.mp4" },
+    { name:"Shaun Timbrell", role:"Senior Director, Industrial & Logistics", phone:"0433 302 979", email:"shaun.timbrell@cbre.com.au", portrait:"assets/shaun-v2.mp4" },
+    { name:"Tim Forsyth", role:"Manager, Industrial & Logistics", phone:"0431 488 061", email:"tim.forsyth@cbre.com", portrait:"assets/tim-v2.mp4" }
+  ],
+  brand: { primary:"#003F2D", accent:"#17E88F", dark:"#012A2D", ink:"#1A1A1A", muted:"#5A6A6C", grey:"#CAD1D3" }
+};
+/* ══ APPLY DEAL → DOM. Runs before the timeline so count-ups + seek capture ══
+   see resolved values. Brand via CSS custom props; copy via textContent. */
+(function applyDeal(){
+  const s = document.documentElement.style;
+  s.setProperty('--green', DEAL.brand.primary);
+  s.setProperty('--accent', DEAL.brand.accent);
+  s.setProperty('--ink', DEAL.brand.ink);
+  s.setProperty('--muted', DEAL.brand.muted);
+  s.setProperty('--grey', DEAL.brand.grey);
+  const $ = id => document.getElementById(id);
+  const p = DEAL.property, ag = DEAL.agency;
+  $('s1-eb').textContent     = ag.team;
+  $('s1-addr').textContent   = p.address1;
+  $('s1-sub').innerHTML      = p.locality + ' &middot; ' + p.region + ' ' + p.postcode;
+  $('s1-leased').textContent = DEAL.deal_status;
+  const l3 = $('s2-l3');
+  if (l3) { l3.querySelector('.l1').textContent = p.address1; l3.querySelector('.l2').innerHTML = p.locality + ' &middot; ' + p.region_short; }
+  $('s4-word').textContent = DEAL.deal_status;
+  $('s4-l3').textContent   = ag.name;
+  const slots = ['s5-a1','s5-a2','s5-a3'];
+  const vids  = { s5_a1:'s5-mike', s5_a2:'s5-shaun', s5_a3:'s5-tim' };
+  slots.forEach(function(id, i){
+    const card = $(id); if (!card) return;
+    const A = DEAL.agents[i];
+    if (!A) { card.style.display = 'none'; return; }
+    card.querySelector('.aname').textContent  = A.name;
+    card.querySelector('.arole').textContent  = A.role;
+    card.querySelector('.acontact').innerHTML = '<div>' + A.phone + '</div><div>' + A.email + '</div>';
+  });
+  $('s6-addr').textContent = p.address1 + ', ' + p.locality;
+  const sect = document.querySelector('.topbar .sect'); if (sect) sect.textContent = ag.service;
+})();
+
+const tl = gsap.timeline({paused:true});
+const E = 'power3.out';
+
+/* Scenes SLIDE right-to-left (client note: "the other one slides right to left,
+   yours just fades in"). Content enters from the right, leaves to the left. */
+function slideIn(sel, t){ tl.fromTo(sel+' .slide', {x:1920}, {x:0, duration:.62, ease:'power3.inOut'}, t); }
+function slideOut(sel, t){ tl.to(sel+' .slide', {x:-1920, duration:.62, ease:'power3.inOut'}, t); }
+
+/* ---- S1 address + LEASED (0 - 4.5) ---- */
+tl.fromTo('#s1-map', {scale:1.2, y:-70}, {scale:1.04, y:40, duration:4.5, ease:'sine.out'}, 0);
+/* flashing marker — finite pulse count (repeat:-1 is banned: non-deterministic
+   under seek-based capture). Core flashes, ring expands, both hard-killed clear
+   of the 4.5s clip boundary so a seek can't land on stale state. */
+tl.fromTo('#s1-dot', {scale:0, opacity:0}, {scale:1, opacity:1, duration:.45, ease:'back.out(2.2)'}, .25);
+for (let i = 0; i < 4; i++) {
+  const t = 0.7 + i * 0.85;
+  tl.to('#s1-dot', {opacity:.35, duration:.2, ease:'power1.inOut'}, t);
+  tl.to('#s1-dot', {opacity:1,   duration:.28, ease:'power1.inOut'}, t + .2);
+  tl.fromTo('#s1-ring', {scale:1, opacity:.95}, {scale:8, opacity:0, duration:.8, ease:'power2.out'}, t);
+}
+tl.set('#s1-ring', {opacity:0, scale:1}, 4.35);
+tl.set('#s1-dot',  {opacity:1}, 4.35);
+tl.fromTo('#s1-eb',     {opacity:0, y:16}, {opacity:1, y:0, duration:.5, ease:E}, .3);
+tl.fromTo('#s1-addr',   {opacity:0, y:30}, {opacity:1, y:0, duration:.6, ease:E}, .46);
+tl.fromTo('#s1-sub',    {opacity:0, y:18}, {opacity:1, y:0, duration:.5, ease:E}, .66);
+tl.fromTo('#s1-leased', {opacity:0, scale:1.18}, {opacity:1, scale:1, duration:.7, ease:'power3.out'}, 1.0);
+tl.fromTo('#s1-rule',   {scaleX:0}, {scaleX:1, duration:.5, ease:E}, 1.5);
+slideOut('#s1', 4.0);
+
+/* ---- S2 drone (4.5 - 13.5) ---- */
+tl.fromTo('#s2-fade', {opacity:0}, {opacity:1, duration:.6, ease:'none'}, 5.6);
+tl.fromTo('#s2-l3',   {opacity:0, x:-40}, {opacity:1, x:0, duration:.7, ease:E}, 5.9);
+tl.to('#s2-l3',       {opacity:0, duration:.45, ease:'none'}, 11.6);
+tl.to('#s2-fade',     {opacity:0, duration:.45, ease:'none'}, 11.9);
+
+/* ---- S3 the numbers (13.5 - 19.0) ---- */
+slideIn('#s3', 13.5);
+tl.fromTo('#s3-still', {scale:1.0}, {scale:1.07, duration:5.5, ease:'sine.inOut'}, 13.5);
+tl.fromTo('#s3-hd', {opacity:0, x:60}, {opacity:1, x:0, duration:.45, ease:E}, 14.1);
+tl.fromTo('#s3-r1', {opacity:0, x:90}, {opacity:1, x:0, duration:.55, ease:E}, 14.3);
+tl.fromTo('#s3-r2', {opacity:0, x:90}, {opacity:1, x:0, duration:.55, ease:E}, 14.7);
+/* count-ups tween a proxy object — deterministic under seek-based capture */
+const c1={v:0}, c2={v:0};
+tl.to(c1,{v:DEAL.areas.building,duration:1.3,ease:'power2.out',
+  onUpdate(){document.getElementById('s3-n1').textContent=Math.round(c1.v).toLocaleString('en-AU');}},14.4);
+tl.to(c2,{v:DEAL.areas.site,duration:1.3,ease:'power2.out',
+  onUpdate(){document.getElementById('s3-n2').textContent=Math.round(c2.v).toLocaleString('en-AU');}},14.8);
+slideOut('#s3', 18.5);
+
+/* ---- S4 LEASED + attribution (19.0 - 23.5) ---- */
+slideIn('#s4', 19.0);
+tl.fromTo('#s4-word', {opacity:0, scale:1.12}, {opacity:1, scale:1, duration:.55, ease:'power3.out'}, 19.5);
+tl.fromTo('#s4-rule', {scaleX:0}, {scaleX:1, duration:.4, ease:E}, 19.85);
+tl.fromTo('#s4-l1',   {opacity:0, y:14}, {opacity:1, y:0, duration:.35, ease:E}, 20.1);
+tl.fromTo('#s4-logo', {opacity:0, y:16}, {opacity:1, y:0, duration:.4, ease:E}, 20.28);
+tl.fromTo('#s4-l2',   {opacity:0, y:14}, {opacity:1, y:0, duration:.35, ease:E}, 20.7);
+tl.fromTo('#s4-l3',   {opacity:0, y:18}, {opacity:1, y:0, duration:.45, ease:E}, 20.88);
+slideOut('#s4', 23.0);
+
+/* ---- S5 agents (23.5 - 28.5) ---- */
+slideIn('#s5', 23.5);
+tl.fromTo('#s5-a1', {opacity:0, x:70}, {opacity:1, x:0, duration:.5, ease:E}, 24.0);
+tl.fromTo('#s5-a2', {opacity:0, x:70}, {opacity:1, x:0, duration:.5, ease:E}, 24.14);
+tl.fromTo('#s5-a3', {opacity:0, x:70}, {opacity:1, x:0, duration:.5, ease:E}, 24.28);
+
+/* ---- S6 brand frame (28.5 - 30.0) ---- */
+slideIn('#s6', 28.5);
+tl.fromTo('#s6-line', {opacity:0, y:14}, {opacity:1, y:0, duration:.38, ease:E}, 28.7);
+tl.fromTo('#s6-logo', {opacity:0, y:16}, {opacity:1, y:0, duration:.42, ease:E}, 28.84);
+tl.fromTo('#s6-addr', {opacity:0}, {opacity:1, duration:.35, ease:'none'}, 29.02);
+
+tl.to({}, {duration:30}, 0);
+
+window.__timelines = window.__timelines || {};
+window.__timelines['claude-leased-16x9'] = tl;
+</script>
+</body>
+</html>

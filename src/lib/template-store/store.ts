@@ -8,6 +8,7 @@
  * The store is chosen by environment so the route code never branches on it.
  */
 import type { Template, TemplateSummary } from "./types";
+import { deriveScenes, deriveMeta } from "./derive";
 
 export interface TemplateStore {
   list(): Promise<TemplateSummary[]>;
@@ -60,12 +61,41 @@ export class FsTemplateStore implements TemplateStore {
     const t = JSON.parse(raw) as Template;
     t.id = id;
     t.compositionPath = t.compositionPath ?? "index.html";
+
+    // D3: scenes are DERIVED from the composition HTML (single source of truth). The
+    // sidecar-declared `scenes` is only a fallback when there's no HTML / empty result.
+    let html: string | null = null;
+    try {
+      html = await readFile(join(this.dir, id, t.compositionPath), "utf8");
+    } catch {
+      html = null;
+    }
+    if (html) {
+      const derived = deriveScenes(html);
+      if (derived.length) t.scenes = derived;
+      const meta = deriveMeta(html);
+      if (meta) {
+        if (!t.aspect && meta.width != null && meta.height != null) {
+          t.aspect = { width: meta.width, height: meta.height };
+        }
+        if (t.durationSec == null && meta.duration != null) {
+          t.durationSec = meta.duration;
+        }
+      }
+    }
     return t;
   }
 
   async composition(id: string): Promise<string | null> {
-    const t = await this.get(id);
-    const rel = t?.compositionPath ?? "index.html";
+    // Resolve compositionPath from template.json directly (not via get(), which derives).
+    let rel = "index.html";
+    try {
+      const raw = await readFile(join(this.dir, id, "template.json"), "utf8");
+      const t = JSON.parse(raw) as Partial<Template>;
+      rel = t.compositionPath ?? "index.html";
+    } catch {
+      // no template.json — assume default
+    }
     try {
       return await readFile(join(this.dir, id, rel), "utf8");
     } catch {
