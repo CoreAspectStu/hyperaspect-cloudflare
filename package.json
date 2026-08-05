@@ -6,28 +6,25 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "build:cf": "npx @opennextjs/cloudflare build",
-    "deploy:cf": "npx @opennextjs/cloudflare build && wrangler deploy"
+    "lint": "eslint"
   },
   "dependencies": {
-    "@types/uuid": "^10.0.0",
     "lucide-react": "^1.21.0",
     "mp4-muxer": "^5.2.2",
     "next": "16.2.9",
+    "node-html-parser": "^9.0.1",
     "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "uuid": "^14.0.0"
+    "react-dom": "19.2.4"
   },
   "devDependencies": {
-    "@opennextjs/cloudflare": "^1.19.11",
-    "@tailwindcss/postcss": "^4.3.1",
+    "@opennextjs/cloudflare": "^1.20.2",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
-    "tailwindcss": "^4.3.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5"
   }
 }
