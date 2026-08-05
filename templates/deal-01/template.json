@@ -1,0 +1,72 @@
+{
+  "family": "deal-video",
+  "name": "CBRE Leased Deal — Primary 16:9",
+  "description": "30s music-only leased-transaction announcement. Hand-crafted HyperFrames composition (v7 lineage). First template family; slots generalise the inline DEAL block. Scenes declared here until HTML-derivation lands.",
+  "aspect": { "width": 1920, "height": 1080 },
+  "durationSec": 30,
+  "brandProfileRef": "cbre",
+  "compositionPath": "index.html",
+  "slots": [
+    { "id": "deal_status", "type": "text", "label": "Deal status", "default": "LEASED" },
+    { "id": "address1", "type": "text", "label": "Address line 1", "default": "11A Grand Avenue" },
+    { "id": "locality", "type": "text", "label": "Locality", "default": "Camellia" },
+    { "id": "region", "type": "text", "label": "Region", "default": "New South Wales" },
+    { "id": "region_short", "type": "text", "label": "Region (short)", "default": "NSW" },
+    { "id": "postcode", "type": "text", "label": "Postcode", "default": "2142" },
+    { "id": "building_area", "type": "number", "label": "Building area (sqm)", "default": 6972 },
+    { "id": "site_area", "type": "number", "label": "Site area (sqm)", "default": 8000 },
+    { "id": "client_name", "type": "text", "label": "Leased on behalf of", "default": "Wentworth Capital" },
+    { "id": "agency_name", "type": "text", "label": "Agency", "default": "CBRE" },
+    { "id": "brand_primary", "type": "color", "label": "Brand primary", "default": "#003F2D" },
+    { "id": "brand_accent", "type": "color", "label": "Brand accent", "default": "#17E88F" },
+    { "id": "agent_1_name", "type": "text", "label": "Agent 1 name", "default": "Michael O'Neill" },
+    { "id": "agent_1_role", "type": "text", "label": "Agent 1 role", "default": "Regional Director, Industrial & Logistics" },
+    { "id": "agent_1_phone", "type": "text", "label": "Agent 1 phone", "default": "0431 500 939" },
+    { "id": "agent_1_email", "type": "text", "label": "Agent 1 email", "default": "michael.oneill@cbre.com.au" },
+    { "id": "agent_2_name", "type": "text", "label": "Agent 2 name", "default": "Shaun Timbrell" },
+    { "id": "agent_2_role", "type": "text", "label": "Agent 2 role", "default": "Senior Director, Industrial & Logistics" },
+    { "id": "agent_2_phone", "type": "text", "label": "Agent 2 phone", "default": "0433 302 979" },
+    { "id": "agent_2_email", "type": "text", "label": "Agent 2 email", "default": "shaun.timbrell@cbre.com.au" },
+    { "id": "agent_3_name", "type": "text", "label": "Agent 3 name", "default": "Tim Forsyth" },
+    { "id": "agent_3_role", "type": "text", "label": "Agent 3 role", "default": "Manager, Industrial & Logistics" },
+    { "id": "agent_3_phone", "type": "text", "label": "Agent 3 phone", "default": "0431 488 061" },
+    { "id": "agent_3_email", "type": "text", "label": "Agent 3 email", "default": "tim.forsyth@cbre.com" }
+  ],
+  "scenes": [
+    { "id": "s1", "index": 0, "start": 0, "duration": 4.5, "tracks": [
+      { "id": "s1-map", "type": "image", "ref": "assets/map-z15.png" },
+      { "id": "s1-address", "type": "text" },
+      { "id": "s1-leased", "type": "text" }
+    ]},
+    { "id": "s2", "index": 1, "start": 4.5, "duration": 9, "tracks": [
+      { "id": "s2-video", "type": "video", "ref": "assets/video2.mp4", "start": 4.5, "duration": 9 },
+      { "id": "s2-lower", "type": "text" }
+    ]},
+    { "id": "s3", "index": 2, "start": 13.5, "duration": 5.5, "tracks": [
+      { "id": "s3-still", "type": "image", "ref": "assets/drone-final.jpg" },
+      { "id": "s3-building", "type": "text" },
+      { "id": "s3-site", "type": "text" }
+    ]},
+    { "id": "s4", "index": 3, "start": 19, "duration": 4.5, "tracks": [
+      { "id": "s4-logo", "type": "image", "ref": "assets/wentworth-logo.jpg" },
+      { "id": "s4-party", "type": "text" }
+    ]},
+    { "id": "s5", "index": 4, "start": 23.5, "duration": 5, "tracks": [
+      { "id": "s5-mike", "type": "video", "ref": "assets/michael-v2.mp4", "start": 23.5, "duration": 5 },
+      { "id": "s5-shaun", "type": "video", "ref": "assets/shaun-v2.mp4", "start": 23.5, "duration": 5 },
+      { "id": "s5-tim", "type": "video", "ref": "assets/tim-v2.mp4", "start": 23.5, "duration": 5 },
+      { "id": "s5-agent1", "type": "text" },
+      { "id": "s5-agent2", "type": "text" },
+      { "id": "s5-agent3", "type": "text" }
+    ]},
+    { "id": "s6", "index": 5, "start": 28.5, "duration": 1.5, "tracks": [
+      { "id": "s6-logo", "type": "image", "ref": "assets/cbre-logo-white.svg" },
+      { "id": "s6-addr", "type": "text" }
+    ]}
+  ],
+  "generationConfig": {
+    "family": "deal-video",
+    "minimal": true,
+    "notes": "Deal family uses mostly real/sourced assets (satellite map, drone footage, agent portraits). Full media-gen (talking-head, B-roll, voice) is the agent-presented family (v2)."
+  }
+}
