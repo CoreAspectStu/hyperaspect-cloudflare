@@ -315,9 +315,10 @@ function normalizeTemplate(raw: unknown): TimelineManifest {
     : def.beats;
 
   const rawSlots = Array.isArray(t.slots) ? (t.slots as Slot[]) : [];
+  const saved = (t.slotValues as Record<string, string | number> | undefined) ?? undefined;
   const slotValues: Record<string, string | number> = {};
   for (const s of rawSlots) {
-    slotValues[s.id] = s.default ?? "";
+    slotValues[s.id] = saved?.[s.id] ?? s.default ?? "";
   }
 
   return {
@@ -359,6 +360,10 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const [renderError, setRenderError] = useState<string | null>(null);
   const [renderSuccess, setRenderSuccess] = useState<string | null>(null);
   const [newJobId, setNewJobId] = useState<string | null>(null);
+  const [slotSave, setSlotSave] = useState<{
+    status: "idle" | "saving" | "saved" | "error";
+    msg?: string;
+  }>({ status: "idle" });
 
   /* ── HyperFrames Inspector state ── */
   const [isInspecting, setIsInspecting] = useState(false);
@@ -457,6 +462,34 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
         : prev,
     );
   }, []);
+
+  /* ── Save slots (deterministic, no gate — D4) ── */
+  const handleSaveSlots = useCallback(async () => {
+    if (!manifest || !manifest.slotValues) return;
+    const id = templateId ?? jobId;
+    if (!id) {
+      setSlotSave({ status: "error", msg: "No template id." });
+      return;
+    }
+    setSlotSave({ status: "saving" });
+    try {
+      const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/values`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: manifest.slotValues }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      setSlotSave({ status: "saved", msg: "Slots saved." });
+    } catch (e) {
+      setSlotSave({
+        status: "error",
+        msg: e instanceof Error ? e.message : "Save failed.",
+      });
+    }
+  }, [manifest, templateId, jobId]);
 
   const addBeat = useCallback(() => {
     setManifest((prev) => {
@@ -733,6 +766,8 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                   slots={manifest.slots}
                   values={manifest.slotValues}
                   onChange={updateSlot}
+                  onSave={handleSaveSlots}
+                  saveState={slotSave}
                 />
               )}
             </div>
@@ -1465,15 +1500,48 @@ function SlotsTab({
   slots,
   values,
   onChange,
+  onSave,
+  saveState,
 }: {
   slots: Slot[];
   values: Record<string, string | number>;
   onChange: (id: string, value: string | number) => void;
+  onSave: () => void;
+  saveState: { status: "idle" | "saving" | "saved" | "error"; msg?: string };
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px", minHeight: "320px" }}>
-      <div style={{ fontSize: "0.7rem", fontWeight: 700, color: COLORS.textMuted }}>
-        {slots.length} template slots · edits are local until the save route ships (brick 5).
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+        <span style={{ fontSize: "0.7rem", fontWeight: 700, color: COLORS.textMuted }}>
+          {slots.length} template slots · edits save to the template values overlay.
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {saveState.status === "saved" && (
+            <span style={successPillStyle}><Check size={14} /> {saveState.msg}</span>
+          )}
+          {saveState.status === "error" && (
+            <span style={errorPillStyle}><AlertCircle size={14} /> {saveState.msg}</span>
+          )}
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saveState.status === "saving"}
+            style={{
+              ...renderBtnStyle,
+              padding: "10px 20px",
+              opacity: saveState.status === "saving" ? 0.7 : 1,
+              cursor: saveState.status === "saving" ? "not-allowed" : "pointer",
+            }}
+          >
+            {saveState.status === "saving" ? (
+              <>
+                <Loader2 size={16} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} /> Saving…
+              </>
+            ) : (
+              "Save slots"
+            )}
+          </button>
+        </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "14px" }}>
         {slots.map((slot) => {

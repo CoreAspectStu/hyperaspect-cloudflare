@@ -68,6 +68,12 @@ export interface Template {
   /** Total duration in seconds. */
   durationSec?: number;
   slots: Slot[];
+  /**
+   * Per-template filled slot values (overlay over each slot's `default`).
+   * Persisted by saveValues(); becomes per-Video slot_values when the Video
+   * model lands. Loaded into the editor as the starting point for edits.
+   */
+  slotValues?: Record<string, string | number>;
   /** Derived (HTML) or declared (sidecar). HTML-derivation is the production goal. */
   scenes: Scene[];
   brandProfileRef?: string;

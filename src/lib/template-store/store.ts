@@ -17,6 +17,11 @@ export interface TemplateStore {
   get(id: string): Promise<Template | null>;
   /** Read the composition HTML (the render target). */
   composition(id: string): Promise<string | null>;
+  /**
+   * Persist deterministic slot-value edits (D4). Stored as a per-template
+   * `values.json` overlay until the Video model lands.
+   */
+  saveValues(id: string, values: Record<string, string | number>): Promise<void>;
 }
 
 /** Object prefix: `templates/{id}/template.json`, `templates/{id}/{compositionPath}`. */
@@ -43,6 +48,17 @@ function applyComposition(t: Template, html: string | null): void {
   }
 }
 
+/** Parse a `values.json` overlay (if any) onto the template's `slotValues`. */
+function applyValues(t: Template, json: string | null): void {
+  if (!json) return;
+  try {
+    const parsed = JSON.parse(json) as Record<string, string | number>;
+    if (parsed && typeof parsed === "object") t.slotValues = parsed;
+  } catch {
+    // malformed values.json — ignore, fall back to slot defaults
+  }
+}
+
 /* ── Structural R2 types (dep-free; the real Workers R2 bucket matches this) ── */
 interface R2ObjectBodyLike {
   text(): Promise<string>;
@@ -61,13 +77,14 @@ interface R2BucketLike {
     cursor?: string;
     limit?: number;
   }): Promise<R2ObjectsLike>;
+  put(key: string, body: string | ArrayBuffer | ReadableStream): Promise<unknown>;
 }
 
 // --- Filesystem (dev) adapter -------------------------------------------------
 // node:fs is dev-only. Under nodejs_compat the import resolves in the Workers
 // bundle too, but FsTemplateStore is never instantiated there (getStore() returns
 // the R2 store), so these never run in prod.
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const TEMPLATES_DIR =
@@ -109,6 +126,11 @@ export class FsTemplateStore implements TemplateStore {
     t.id = id;
     t.compositionPath = t.compositionPath ?? "index.html";
     applyComposition(t, await this.composition(id));
+    try {
+      applyValues(t, await readFile(join(this.dir, id, "values.json"), "utf8"));
+    } catch {
+      // no values.json yet — slot defaults stand
+    }
     return t;
   }
 
@@ -125,6 +147,10 @@ export class FsTemplateStore implements TemplateStore {
     } catch {
       return null;
     }
+  }
+
+  async saveValues(id: string, values: Record<string, string | number>): Promise<void> {
+    await writeFile(join(this.dir, id, "values.json"), JSON.stringify(values, null, 2), "utf8");
   }
 }
 
@@ -163,6 +189,8 @@ export class R2TemplateStore implements TemplateStore {
     t.id = id;
     t.compositionPath = t.compositionPath ?? "index.html";
     applyComposition(t, await this.composition(id));
+    const vbody = await this.bucket.get(`${R2_PREFIX}${id}/values.json`);
+    applyValues(t, vbody ? await vbody.text() : null);
     return t;
   }
 
@@ -184,6 +212,10 @@ export class R2TemplateStore implements TemplateStore {
     } catch {
       return "index.html";
     }
+  }
+
+  async saveValues(id: string, values: Record<string, string | number>): Promise<void> {
+    await this.bucket.put(`${R2_PREFIX}${id}/values.json`, JSON.stringify(values, null, 2));
   }
 }
 
