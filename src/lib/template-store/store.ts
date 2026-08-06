@@ -1,12 +1,14 @@
 /**
- * Template store — how the platform reads/writes templates + compositions.
+ * Template store — how the platform reads templates + compositions.
  *
- * DEV adapter: FsTemplateStore (reads a local `templates/` dir). Only works under
- * `next dev` (Node); Workers have no node:fs.
- * PROD adapter (next brick): R2TemplateStore (Cloudflare R2). Same interface.
- *
- * The store is chosen by environment so the route code never branches on it.
+ * Two adapters behind one {@link TemplateStore} interface (architecture D1):
+ *  - `FsTemplateStore` — dev (`next dev`, Node) reads a local `templates/` dir.
+ *  - `R2TemplateStore` — prod (Workers) reads Cloudflare R2.
+ * `getStore()` picks per runtime: R2 when the Workers binding is present (via
+ * `getRequestContext()`), else the filesystem. Scenes are DERIVED from the
+ * composition HTML (D3) in both, via the shared `applyComposition()` helper.
  */
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Template, TemplateSummary } from "./types";
 import { deriveScenes, deriveMeta } from "./derive";
 
@@ -17,9 +19,54 @@ export interface TemplateStore {
   composition(id: string): Promise<string | null>;
 }
 
+/** Object prefix: `templates/{id}/template.json`, `templates/{id}/{compositionPath}`. */
+const R2_PREFIX = "templates/";
+
+/**
+ * Apply D3 scene-derivation to a loaded template: prefer scenes DERIVED from the
+ * composition HTML (single source), keep the sidecar-declared `scenes` only as a
+ * fallback; fill aspect/durationSec from the composition root when unset. Shared by
+ * both stores so derivation stays identical across dev and prod.
+ */
+function applyComposition(t: Template, html: string | null): void {
+  if (!html) return;
+  const derived = deriveScenes(html);
+  if (derived.length) t.scenes = derived;
+  const meta = deriveMeta(html);
+  if (meta) {
+    if (!t.aspect && meta.width != null && meta.height != null) {
+      t.aspect = { width: meta.width, height: meta.height };
+    }
+    if (t.durationSec == null && meta.duration != null) {
+      t.durationSec = meta.duration;
+    }
+  }
+}
+
+/* ── Structural R2 types (dep-free; the real Workers R2 bucket matches this) ── */
+interface R2ObjectBodyLike {
+  text(): Promise<string>;
+}
+interface R2ObjectsLike {
+  objects: { key: string }[];
+  delimitedPrefixes: string[];
+  truncated: boolean;
+  cursor?: string;
+}
+interface R2BucketLike {
+  get(key: string): Promise<R2ObjectBodyLike | null>;
+  list(opts?: {
+    prefix?: string;
+    delimiter?: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<R2ObjectsLike>;
+}
+
 // --- Filesystem (dev) adapter -------------------------------------------------
-// node:fs is dev-only; keep the import lazy-isolated so a production (Workers)
-// build can tree-shake this adapter once R2TemplateStore lands.
+// node:fs is dev-only. Under nodejs_compat the import resolves in the Workers
+// bundle too, but FsTemplateStore is never instantiated there (getStore() returns
+// the R2 store), so these never run in prod.
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -61,38 +108,15 @@ export class FsTemplateStore implements TemplateStore {
     const t = JSON.parse(raw) as Template;
     t.id = id;
     t.compositionPath = t.compositionPath ?? "index.html";
-
-    // D3: scenes are DERIVED from the composition HTML (single source of truth). The
-    // sidecar-declared `scenes` is only a fallback when there's no HTML / empty result.
-    let html: string | null = null;
-    try {
-      html = await readFile(join(this.dir, id, t.compositionPath), "utf8");
-    } catch {
-      html = null;
-    }
-    if (html) {
-      const derived = deriveScenes(html);
-      if (derived.length) t.scenes = derived;
-      const meta = deriveMeta(html);
-      if (meta) {
-        if (!t.aspect && meta.width != null && meta.height != null) {
-          t.aspect = { width: meta.width, height: meta.height };
-        }
-        if (t.durationSec == null && meta.duration != null) {
-          t.durationSec = meta.duration;
-        }
-      }
-    }
+    applyComposition(t, await this.composition(id));
     return t;
   }
 
   async composition(id: string): Promise<string | null> {
-    // Resolve compositionPath from template.json directly (not via get(), which derives).
     let rel = "index.html";
     try {
       const raw = await readFile(join(this.dir, id, "template.json"), "utf8");
-      const t = JSON.parse(raw) as Partial<Template>;
-      rel = t.compositionPath ?? "index.html";
+      rel = (JSON.parse(raw) as Partial<Template>).compositionPath ?? "index.html";
     } catch {
       // no template.json — assume default
     }
@@ -104,17 +128,87 @@ export class FsTemplateStore implements TemplateStore {
   }
 }
 
-// --- R2 (prod) adapter — next brick ------------------------------------------
-// class R2TemplateStore implements TemplateStore { … env.BUCKETS.TEMPLATES … }
+// --- R2 (prod) adapter --------------------------------------------------------
+/** Cloudflare R2-backed store. Object layout mirrors the dev dir: `templates/{id}/…`. */
+export class R2TemplateStore implements TemplateStore {
+  constructor(private bucket: R2BucketLike) {}
+
+  async list(): Promise<TemplateSummary[]> {
+    const out: TemplateSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const res = await this.bucket.list({
+        prefix: R2_PREFIX,
+        delimiter: "/",
+        cursor,
+        limit: 100,
+      });
+      for (const prefix of res.delimitedPrefixes) {
+        const id = prefix.slice(R2_PREFIX.length).replace(/\/$/, "");
+        if (!id) continue;
+        const body = await this.bucket.get(`${prefix}template.json`);
+        if (!body) continue;
+        const t = JSON.parse(await body.text()) as Partial<Template>;
+        out.push({ id, family: t.family ?? "unknown", name: t.name ?? id });
+      }
+      cursor = res.truncated ? res.cursor : undefined;
+    } while (cursor);
+    return out;
+  }
+
+  async get(id: string): Promise<Template | null> {
+    const body = await this.bucket.get(`${R2_PREFIX}${id}/template.json`);
+    if (!body) return null;
+    const t = JSON.parse(await body.text()) as Template;
+    t.id = id;
+    t.compositionPath = t.compositionPath ?? "index.html";
+    applyComposition(t, await this.composition(id));
+    return t;
+  }
+
+  async composition(id: string): Promise<string | null> {
+    const rel = await this.compositionPath(id);
+    const body = await this.bucket.get(`${R2_PREFIX}${id}/${rel}`);
+    return body ? await body.text() : null;
+  }
+
+  /** Read compositionPath from the sidecar (default "index.html") without a full get(). */
+  private async compositionPath(id: string): Promise<string> {
+    const body = await this.bucket.get(`${R2_PREFIX}${id}/template.json`);
+    if (!body) return "index.html";
+    try {
+      return (
+        (JSON.parse(await body.text()) as Partial<Template>).compositionPath ??
+        "index.html"
+      );
+    } catch {
+      return "index.html";
+    }
+  }
+}
 
 /**
- * Resolve the active store. DEV uses the filesystem; PROD (Workers) will use R2.
- * For now PROD throws explicitly so it can't silently fall back to a node:fs call
- * that would fail on the Workers runtime.
+ * Resolve the active store by runtime. In Workers (OpenNext) the R2 binding is
+ * reachable via getRequestContext(); in `next dev` (Node) there is no request
+ * context → fall back to the filesystem. Set DEV_STORE=fs to force the filesystem
+ * store even under Workers.
  */
 export function getStore(): TemplateStore {
-  if (process.env.DEV_STORE === "r2") {
-    throw new Error("R2TemplateStore not implemented yet (brick 2).");
+  if (process.env.DEV_STORE !== "fs") {
+    const bucket = r2Bucket();
+    if (bucket) return new R2TemplateStore(bucket);
   }
   return new FsTemplateStore();
+}
+
+/** Pull the R2 binding from the Cloudflare context, or null if not on Workers. */
+function r2Bucket(): R2BucketLike | null {
+  try {
+    const env = getCloudflareContext().env as unknown as {
+      TEMPLATES?: R2BucketLike;
+    };
+    return env.TEMPLATES ?? null;
+  } catch {
+    return null; // next dev (Node) — no Cloudflare context
+  }
 }

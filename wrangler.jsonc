@@ -6,5 +6,11 @@
     "directory": ".open-next/assets",
     "binding": "ASSETS"
   },
+  "r2_buckets": [
+    {
+      "binding": "TEMPLATES",
+      "bucket_name": "hyperaspect-templates"
+    }
+  ],
   "name": "hyperaspect"
 }
