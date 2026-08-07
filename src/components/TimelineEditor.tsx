@@ -35,6 +35,7 @@ import {
   Zap,
   Move,
   ScanSearch,
+  ShieldCheck,
 } from "lucide-react";
 import type { Slot, Track } from "@/lib/template-store/types";
 
@@ -151,6 +152,23 @@ interface InspectReport {
   infoCount?: number;
   truncated?: boolean;
   issues?: InspectIssue[];
+}
+
+/* ── Lint gate report (from `hyperframes lint --json` via /api/.../check) ── */
+interface CheckFinding {
+  severity?: "error" | "warning" | "info" | string;
+  code?: string;
+  message?: string;
+  selector?: string;
+  [key: string]: unknown;
+}
+
+interface CheckReport {
+  ok?: boolean;
+  errorCount?: number;
+  warningCount?: number;
+  infoCount?: number;
+  findings?: CheckFinding[];
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -379,6 +397,11 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const [inspectReport, setInspectReport] = useState<InspectReport | null>(null);
   const [inspectError, setInspectError] = useState<string | null>(null);
 
+  /* ── Lint gate (D5 step 1) state ── */
+  const [isChecking, setIsChecking] = useState(false);
+  const [checkReport, setCheckReport] = useState<CheckReport | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
     let cancelled = false;
@@ -575,6 +598,32 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
       setIsInspecting(false);
     }
   }, [jobId, isInspecting]);
+
+  /* ══ Lint gate (D5 step 1) ══ */
+  const handleCheck = useCallback(async () => {
+    const id = templateId ?? jobId;
+    if (isChecking || !id) return;
+    setIsChecking(true);
+    setCheckError(null);
+    setCheckReport(null);
+    try {
+      const res = await fetch(
+        `/api/studio/template/${encodeURIComponent(id)}/check`,
+      );
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(
+          `Check failed (HTTP ${res.status})${txt ? `: ${txt.slice(0, 200)}` : ""}`,
+        );
+      }
+      const data: CheckReport = await res.json();
+      setCheckReport(data);
+    } catch (e) {
+      setCheckError(e instanceof Error ? e.message : "Check failed unexpectedly.");
+    } finally {
+      setIsChecking(false);
+    }
+  }, [templateId, jobId, isChecking]);
 
   /* ══ Render (render bridge → relay → core-control farm → mp4) ══ */
   const handleRender = useCallback(async () => {
@@ -902,6 +951,28 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </button>
                 <button
                   type="button"
+                  onClick={handleCheck}
+                  disabled={isChecking}
+                  style={{
+                    ...inspectBtnStyle,
+                    opacity: isChecking ? 0.7 : 1,
+                    cursor: isChecking ? "not-allowed" : "pointer",
+                  }}
+                  title="Run the structural lint gate (hyperframes lint) on this composition"
+                >
+                  {isChecking ? (
+                    <>
+                      <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+                      Checking…
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={18} /> Check
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
                   onClick={handleRender}
                   disabled={!renderId || renderBusy}
                   style={{
@@ -947,6 +1018,21 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
           </div>
         )}
 
+        {/* ── Check overlay (running) ── */}
+        {isChecking && (
+          <div style={rerenderOverlayStyle}>
+            <div style={{ ...rerenderCardStyle, backgroundColor: COLORS.bg, color: COLORS.text }}>
+              <Loader2 size={44} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+              <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1.1rem", letterSpacing: "0.03em", marginTop: "16px" }}>
+                Running lint gate…
+              </div>
+              <div style={{ fontSize: "0.85rem", fontWeight: 600, opacity: 0.8, marginTop: "6px" }}>
+                hyperframes lint is validating the composition structure &amp; determinism.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── Inspect results modal ── */}
         {(inspectReport || inspectError) && !isInspecting && (
           <InspectModal
@@ -955,6 +1041,18 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             onClose={() => {
               setInspectReport(null);
               setInspectError(null);
+            }}
+          />
+        )}
+
+        {/* ── Check results modal (lint gate) ── */}
+        {(checkReport || checkError) && !isChecking && (
+          <CheckModal
+            report={checkReport}
+            error={checkError}
+            onClose={() => {
+              setCheckReport(null);
+              setCheckError(null);
             }}
           />
         )}
@@ -1119,6 +1217,121 @@ function InspectModal({
             <X size={16} /> Close
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Sub-component: CheckModal — structural lint gate results (D5 step 1)
+ * Shows the hyperframes lint verdict + findings (errors = hard fail, warnings/info advisory).
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+function CheckModal({
+  report,
+  error,
+  onClose,
+}: {
+  report: CheckReport | null;
+  error: string | null;
+  onClose: () => void;
+}) {
+  const findings = report?.findings ?? [];
+  const errors = report?.errorCount ?? 0;
+  const clean = (report?.ok ?? false) || errors === 0;
+
+  return (
+    <div style={inspectOverlayStyle}>
+      <div style={inspectModalStyle}>
+        {/* Header */}
+        <div style={inspectHeaderStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={logoBadgeStyle}>
+              <ShieldCheck size={18} strokeWidth={2.5} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1.05rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.03em", lineHeight: 1 }}>
+                Composition Lint
+              </div>
+              <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "2px" }}>
+                Structure · Determinism gate (D5)
+              </div>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} style={closeBtnBase} aria-label="Close lint report">
+            <X size={20} strokeWidth={2.5} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={inspectBodyStyle}>
+          {error && (
+            <div style={errorPillStyle}>
+              <AlertCircle size={15} /> <span style={{ flex: 1 }}>{error}</span>
+            </div>
+          )}
+
+          {!error && clean && (
+            <div style={inspectCleanStyle}>
+              <Check size={40} strokeWidth={3} />
+              <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1rem", marginTop: "10px" }}>
+                No lint errors
+              </div>
+              <div style={{ fontSize: "0.8rem", fontWeight: 600, color: COLORS.textMuted, marginTop: "4px" }}>
+                {report?.warningCount
+                  ? `${report.warningCount} warning(s) · ${report?.infoCount ?? 0} info — advisory only.`
+                  : "Composition passed the structural gate."}
+              </div>
+            </div>
+          )}
+
+          {!error && !clean && (
+            <>
+              <div style={inspectSummaryStyle}>
+                <CountPill label="Errors" value={errors} tone="error" />
+                <CountPill label="Warnings" value={report?.warningCount ?? 0} tone="warn" />
+                <CountPill label="Info" value={report?.infoCount ?? 0} tone="info" />
+              </div>
+              <div style={inspectListStyle}>
+                {findings.map((f, i) => (
+                  <CheckFindingRow key={i} finding={f} />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={footerStyle}>
+          <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
+            Powered by hyperframes lint
+          </div>
+          <button type="button" onClick={onClose} style={inspectCloseBtnStyle}>
+            <X size={16} /> Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CheckFindingRow({ finding }: { finding: CheckFinding }) {
+  const sev = (finding.severity || "info").toLowerCase();
+  const tone = sev === "error" ? "error" : sev === "warning" ? "warn" : "info";
+  const bg = tone === "error" ? "#ffe2e2" : tone === "warn" ? "#fff3cd" : "#e2e8ff";
+  const fg = tone === "error" ? "#b00020" : tone === "warn" ? "#8a6d00" : "#1d3a8a";
+  return (
+    <div style={{ padding: "8px 10px", borderBottom: "1px solid rgba(0,0,0,0.08)", display: "flex", gap: "10px", alignItems: "flex-start" }}>
+      <span style={{ fontSize: "0.6rem", fontWeight: 900, textTransform: "uppercase", padding: "2px 6px", background: bg, color: fg, flexShrink: 0, letterSpacing: "0.03em" }}>
+        {sev}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: "0.72rem", fontWeight: 800, color: COLORS.text, wordBreak: "break-word" }}>
+          {finding.code || sev}
+        </div>
+        {finding.message && (
+          <div style={{ fontSize: "0.78rem", color: COLORS.textMuted, marginTop: "2px" }}>{finding.message}</div>
+        )}
       </div>
     </div>
   );

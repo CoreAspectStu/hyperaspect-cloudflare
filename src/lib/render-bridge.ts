@@ -181,6 +181,47 @@ export async function getRenderStatus(jobId: string): Promise<RenderStatus> {
   return parsed as RenderStatus;
 }
 
+/** Lint report shape from `hyperframes lint --json` (flat — no nested wrapper). */
+export interface CheckReport {
+  ok: boolean;
+  errorCount: number;
+  warningCount: number;
+  infoCount: number;
+  findings: Array<{
+    severity: string; // "error" | "warning" | "info"
+    code: string;
+    message?: string;
+    selector?: string;
+  }>;
+}
+
+/**
+ * GET /video-check/:id — the structural lint gate (D5 step 1). The relay runs
+ * `hyperframes lint --json` on the STAGED composition. `ok` is the pass verdict
+ * (true = 0 errors); warnings/info are advisory. Throws RelayError(404) if the
+ * composition isn't staged, RelayError(502) if the relay/lint fails.
+ */
+export async function getCheckReport(videoName: string): Promise<CheckReport> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-check/${encodeURIComponent(videoName)}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(
+      resp.status,
+      `relay ${resp.status} for check ${videoName}`,
+      parsed,
+    );
+  }
+  return parsed as CheckReport;
+}
+
 /** Map a thrown RelayError (or unexpected error) to a NextResponse, passing the
  * upstream status + body through so callers see the real relay verdict (409, 404…). */
 export function relayErrorResponse(e: unknown) {
