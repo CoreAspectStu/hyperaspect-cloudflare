@@ -6,8 +6,8 @@
  * Loads a render-job manifest, shows beats (scenes) on a proportional
  * timeline bar, lets the user edit individual beats (headline, subtext,
  * duration, layout, caption style, transition), reorder / add / delete
- * beats, adjust global style + audio settings, and trigger a re-render
- * via POST /api/manifest/rerender.
+ * beats, adjust global style + audio settings, and trigger a render via the
+ * render bridge (POST /api/studio/template/[id]/render → poll .../render/[jobId]).
  *
  * Neo-brutalist styling: cream bg, 4px black borders, hard shadows.
  * Uses createPortal for a true full-screen overlay.
@@ -360,6 +360,15 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const [renderError, setRenderError] = useState<string | null>(null);
   const [renderSuccess, setRenderSuccess] = useState<string | null>(null);
   const [newJobId, setNewJobId] = useState<string | null>(null);
+  // Render-bridge job state (POST /api/studio/template/[id]/render → poll .../render/[jobId]).
+  // Rendering is async + server-side (~minutes on core-control), so the UI stays NON-blocking:
+  // `renderPhase` drives the button + a footer progress pill; `isRerendering` only gates the
+  // brief enqueue fetch, never the whole poll — the editor stays usable while a render runs.
+  const [renderPhase, setRenderPhase] = useState<
+    "queued" | "running" | "completed" | "failed" | null
+  >(null);
+  const [renderProgress, setRenderProgress] = useState<number>(0);
+  const [renderOutput, setRenderOutput] = useState<string | null>(null);
   const [slotSave, setSlotSave] = useState<{
     status: "idle" | "saving" | "saved" | "error";
     msg?: string;
@@ -567,50 +576,98 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     }
   }, [jobId, isInspecting]);
 
-  /* ══ Re-render ══ */
-  const handleRerender = useCallback(async () => {
-    if (!manifest || isRerendering) return;
-    if (!jobId) {
-      setRenderError("Re-render requires a rendered job — not available for a bare template.");
-      return;
-    }
+  /* ══ Render (render bridge → relay → core-control farm → mp4) ══ */
+  const handleRender = useCallback(async () => {
+    const id = templateId ?? jobId;
+    if (!manifest || !id) return;
+    if (isRerendering || renderPhase === "queued" || renderPhase === "running") return;
+
     setIsRerendering(true);
     setRenderError(null);
     setRenderSuccess(null);
-    setNewJobId(null);
+    setRenderPhase(null);
+    setRenderProgress(0);
+    setRenderOutput(null);
 
     try {
-      const res = await fetch("/api/manifest/rerender", {
+      // The bridge enqueues by template id; slot values are forwarded server-side
+      // from the saved values.json (not yet applied by the render — see D5).
+      const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId, manifest }),
+        body: "{}",
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
+        // Prefer the upstream detail (e.g. "a pending or running job already
+        // exists") over the bridge's terse "relay 409 for …" wrapper.
         throw new Error(
-          `Re-render failed (HTTP ${res.status})${txt ? `: ${txt.slice(0, 200)}` : ""}`,
+          (data?.upstream && (data.upstream as { error?: string }).error) ||
+            data?.error ||
+            `Render failed (HTTP ${res.status})`,
         );
       }
-      const data = await res.json();
-      const returnedJobId = data?.jobId || data?.id || data?.job_id;
-      if (returnedJobId) setNewJobId(returnedJobId);
-      setRenderSuccess(
-        returnedJobId
-          ? `Re-render started! New job ID: ${returnedJobId}`
-          : "Re-render started successfully!",
-      );
+      const returnedJobId: string | undefined = data?.jobId;
+      if (!returnedJobId) throw new Error("Render bridge returned no jobId.");
+      setNewJobId(returnedJobId);
+      setRenderPhase((data?.status as string) === "running" ? "running" : "queued");
     } catch (e) {
-      setRenderError(
-        e instanceof Error ? e.message : "Re-render failed unexpectedly.",
-      );
+      setRenderError(e instanceof Error ? e.message : "Render failed unexpectedly.");
     } finally {
       setIsRerendering(false);
     }
-  }, [manifest, jobId, isRerendering]);
+  }, [manifest, templateId, jobId, isRerendering, renderPhase]);
+
+  /* ── Poll the bridge job until it completes or fails. Non-blocking: this only
+   * updates the progress pill; the editor stays fully usable while it runs. ── */
+  useEffect(() => {
+    if (!newJobId || !renderPhase) return;
+    if (renderPhase === "completed" || renderPhase === "failed") return;
+    const id = templateId ?? jobId;
+    if (!id) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(
+          `/api/studio/template/${encodeURIComponent(id)}/render/${encodeURIComponent(newJobId)}`,
+        );
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setRenderPhase("failed");
+          setRenderError(data?.error || `Status poll failed (HTTP ${res.status}).`);
+          return;
+        }
+        const st = (data?.status as string) || "running";
+        setRenderProgress(typeof data?.progress === "number" ? data.progress : 0);
+        if (st === "completed") {
+          setRenderPhase("completed");
+          setRenderOutput(data?.output || null);
+        } else if (st === "failed") {
+          setRenderPhase("failed");
+          setRenderError(data?.error || "Render failed on the farm.");
+        } else {
+          setRenderPhase(st === "queued" ? "queued" : "running");
+        }
+      } catch {
+        // Transient network blip — leave phase as-is; the next tick retries.
+      }
+    };
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [newJobId, renderPhase, templateId, jobId]);
 
   /* ═══════════════════════════════════════════════════════════════════════
    * Render
    * ═══════════════════════════════════════════════════════════════════════ */
+  const renderId = templateId ?? jobId;
+  const renderBusy =
+    isRerendering || renderPhase === "queued" || renderPhase === "running";
 
   const overlay = (
     <div style={overlayStyle}>
@@ -772,8 +829,36 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
               )}
             </div>
 
-            {/* ════ FOOTER: re-render + status ════ */}
+            {/* ════ FOOTER: render + status ════ */}
             <div style={footerStyle}>
+              {(renderPhase === "queued" || renderPhase === "running") && (
+                <div style={successPillStyle}>
+                  <Loader2 size={15} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+                  <span style={{ flex: 1 }}>Rendering on the farm… {renderProgress}%</span>
+                </div>
+              )}
+              {renderPhase === "completed" && (
+                <div style={successPillStyle}>
+                  <Check size={15} />
+                  <span style={{ flex: 1 }}>
+                    {renderOutput ? (
+                      <>Render ready → <code style={{ fontSize: "0.8rem" }}>{String(renderOutput).split("/").pop()}</code></>
+                    ) : (
+                      "Render complete."
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRenderPhase(null);
+                      setRenderOutput(null);
+                    }}
+                    style={dismissBtnStyle}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
               {renderError && (
                 <div style={errorPillStyle}>
                   <AlertCircle size={15} /> <span style={{ flex: 1 }}>{renderError}</span>
@@ -817,23 +902,25 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </button>
                 <button
                   type="button"
-                  onClick={handleRerender}
-                  disabled={isRerendering || !jobId}
+                  onClick={handleRender}
+                  disabled={!renderId || renderBusy}
                   style={{
                     ...renderBtnStyle,
-                    opacity: isRerendering || !jobId ? 0.7 : 1,
-                    cursor: isRerendering || !jobId ? "not-allowed" : "pointer",
+                    opacity: !renderId || renderBusy ? 0.7 : 1,
+                    cursor: !renderId || renderBusy ? "not-allowed" : "pointer",
                   }}
-                  title={jobId ? "Re-render the video with current edits" : "Re-render requires a rendered job"}
+                  title={renderId ? "Render this template to an mp4 via the render farm" : "No template id"}
                 >
-                  {isRerendering ? (
+                  {renderBusy ? (
                     <>
                       <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
-                      Re-rendering…
+                      {renderPhase === "queued" || renderPhase === "running"
+                        ? `Rendering… ${renderProgress}%`
+                        : "Starting…"}
                     </>
                   ) : (
                     <>
-                      <RefreshCw size={18} /> Re-render Video
+                      <RefreshCw size={18} /> Render Video
                     </>
                   )}
                 </button>
@@ -842,20 +929,8 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
           </>
         )}
 
-        {/* ── Rerender overlay ── */}
-        {isRerendering && (
-          <div style={rerenderOverlayStyle}>
-            <div style={rerenderCardStyle}>
-              <Loader2 size={44} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite", color: "#fff" }} />
-              <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1.1rem", letterSpacing: "0.03em", marginTop: "16px" }}>
-                Re-rendering your video…
-              </div>
-              <div style={{ fontSize: "0.85rem", fontWeight: 600, opacity: 0.8, marginTop: "6px" }}>
-                Sending updated manifest to render pipeline.
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Render status (non-blocking) lives in the footer pill below — the
+            server-side render takes minutes, so we don't lock the editor. */}
 
         {/* ── Inspect overlay (running) ── */}
         {isInspecting && (
