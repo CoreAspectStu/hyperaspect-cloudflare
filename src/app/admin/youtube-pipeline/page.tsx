@@ -403,7 +403,7 @@ GET  /api/youtube/videos`}</pre>
                 <div style={{ background: C.red, color: C.paper, border: BORDER_SM, padding: "8px 12px", fontWeight: 800, fontSize: "12px", textTransform: "uppercase", marginBottom: "12px", boxShadow: SHADOW_SM }}>⚠ {submitError}</div>
               )}
 
-              <button onClick={handleProcess} disabled={submitting || !url} style={{ width: "100%", padding: "16px", background: submitting || !url ? "#c9b9bd" : C.red, color: C.paper, border: BORDER_SM, boxShadow: SHADOW_SM, fontWeight: 900, fontSize: "16px", cursor: submitting || !url ? "not-allowed" : "pointer", textTransform: "uppercase", letterSpacing: "1px" }}>
+              <button onClick={handleProcess} disabled={submitting || !sourceId} style={{ width: "100%", padding: "16px", background: submitting || !sourceId ? "#c9b9bd" : C.red, color: C.paper, border: BORDER_SM, boxShadow: SHADOW_SM, fontWeight: 900, fontSize: "16px", cursor: submitting || !sourceId ? "not-allowed" : "pointer", textTransform: "uppercase", letterSpacing: "1px" }}>
                 {submitting ? "Submitting…" : "▶ Process Video"}
               </button>
             </Panel>
