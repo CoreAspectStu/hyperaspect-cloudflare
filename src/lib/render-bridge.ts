@@ -8,13 +8,15 @@ import { NextResponse } from "next/server";
  *
  * Auth: shared bearer `RENDER_SECRET` (same secret as /api/webhook, /api/extract-slots).
  * Upstream contract: ~/services/propodoc-render/server.mjs —
- *   POST /video-render      { videoName, variables?, webhookUrl? } → 202 { jobId, status, videoName }
- *   GET  /video-status/:id  → { jobId, status, progress, videoName, output, error, createdAt, completedAt }
+ *   POST /video-rerender/:id { variables? } → recompose {{token}} template + enqueue → 202 { jobId, …, unresolvedPlaceholders }
+ *   POST /video-render       { videoName, variables?, webhookUrl? } → 202 { jobId, status, videoName } (canonical; variables ignored)
+ *   GET  /video-status/:id   → { jobId, status, progress, videoName, output, error, createdAt, completedAt }
  *
- * NOTE (brick 6): the render ExecStart does NOT consume --variables-file, so
- * `variables` are currently NOT applied — the composition renders as-is (deal-01's
- * inlined DEAL block). Passing slot values is harmless and keeps the plumbing
- * ready for the gated-diff (D5). Wiring variables into the render is follow-up #2.
+ * Variable binding (brick 7): `variables` (slot values) are bound into the composition
+ * via the relay's mustache recompose (`/video-rerender`) — the composition's editable
+ * values are `{{slotId}}` tokens in videos/_templates/<id>/index.html, resolved from
+ * manifest defaults + the slot values. `/video-render` (the fallback for unbound
+ * templates) does not apply variables. See enqueueRender.
  */
 
 const RENDER_BASE = "https://render.coreaspectai.com";
@@ -63,22 +65,91 @@ export interface RenderStatus extends RenderJob {
 }
 
 /**
- * Enqueue a render for a staged `videoName`. The relay renders the composition
- * at ~/projects/hyperframes-video-creator/videos/<videoName>/index.html.
+ * Enqueue a render for a staged `videoName`, binding `variables` (slot values)
+ * into the composition first. The relay renders the composition at
+ * ~/projects/hyperframes-video-creator/videos/<videoName>/index.html.
+ *
+ * Variable binding (brick 7): prefer the relay's recompose-then-render endpoint
+ * (`/video-rerender`), which substitutes `{{slotId}}` tokens in a mustache
+ * template (`videos/_templates/<videoName>/index.html` + manifest defaults) with
+ * the slot values before enqueuing — so edits actually change the mp4. If the
+ * template isn't bound (no _templates/manifest → relay 500 "recompose failed"),
+ * fall back to `/video-render`, which renders the staged composition as-is.
+ *
  * Returns { jobId, status, videoName }. Throws RelayError(409) if a job already
- * exists for this video, RelayError(502) if the relay is unreachable.
+ * exists, RelayError(422) if any `{{token}}` is unresolved (never render literal
+ * tokens), RelayError(502) if the relay is unreachable.
  */
 export async function enqueueRender(
   videoName: string,
   opts?: { variables?: Record<string, unknown>; webhookUrl?: string },
 ): Promise<RenderJob> {
-  const body: Record<string, unknown> = { videoName };
+  const body: Record<string, unknown> = {};
   if (opts?.variables) body.variables = opts.variables;
   if (opts?.webhookUrl) body.webhookUrl = opts.webhookUrl;
 
+  try {
+    return await rerenderAndEnqueue(videoName, body);
+  } catch (e) {
+    // Unbound template (no _templates/manifest) → recompose 500s; render canonical.
+    if (e instanceof RelayError && e.status === 500) {
+      return await directEnqueue(videoName, body);
+    }
+    throw e;
+  }
+}
+
+/** Recompose the composition with `body.variables` (mustache), then enqueue. */
+async function rerenderAndEnqueue(
+  videoName: string,
+  body: Record<string, unknown>,
+): Promise<RenderJob> {
+  const { resp, parsed } = await postJson(
+    `/video-rerender/${encodeURIComponent(videoName)}`,
+    body,
+  );
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for ${videoName}`, parsed);
+  }
+  const r = parsed as {
+    jobId?: string;
+    status?: string;
+    videoName?: string;
+    unresolvedPlaceholders?: string[];
+  };
+  if (r.unresolvedPlaceholders && r.unresolvedPlaceholders.length) {
+    throw new RelayError(
+      422,
+      `unresolved template bindings: ${r.unresolvedPlaceholders.join(", ")}`,
+      parsed,
+    );
+  }
+  if (!r.jobId) {
+    throw new RelayError(502, `relay returned no jobId for ${videoName}`, parsed);
+  }
+  return { jobId: r.jobId, status: r.status ?? "queued", videoName: r.videoName ?? videoName };
+}
+
+/** Fallback: enqueue a canonical render (variables ignored by this path). */
+async function directEnqueue(
+  videoName: string,
+  body: Record<string, unknown>,
+): Promise<RenderJob> {
+  const { resp, parsed } = await postJson(`/video-render`, { videoName, ...body });
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for ${videoName}`, parsed);
+  }
+  return parsed as RenderJob;
+}
+
+/** POST JSON to the relay; never throws on HTTP status (caller inspects resp). */
+async function postJson(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ resp: Response; parsed: unknown }> {
   let resp: Response;
   try {
-    resp = await fetch(`${RENDER_BASE}/video-render`, {
+    resp = await fetch(`${RENDER_BASE}${path}`, {
       method: "POST",
       headers: { authorization: bearer(), "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -86,12 +157,7 @@ export async function enqueueRender(
   } catch (e) {
     throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
   }
-
-  const parsed = await parseBody(resp);
-  if (!resp.ok) {
-    throw new RelayError(resp.status, `relay ${resp.status} for ${videoName}`, parsed);
-  }
-  return parsed as RenderJob;
+  return { resp, parsed: await parseBody(resp) };
 }
 
 /**
