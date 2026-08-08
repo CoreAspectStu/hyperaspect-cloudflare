@@ -38,6 +38,8 @@ import {
   ShieldCheck,
   Sparkles,
   Wand2,
+  Bot,
+  ArrowRight,
 } from "lucide-react";
 import type { Slot, Track } from "@/lib/template-store/types";
 
@@ -221,6 +223,21 @@ type Gate =
       steps: GateSteps;
       error?: string;
     };
+
+/* ── LLM-proposal (D4: the gate's caller) ── */
+interface ProposalChange {
+  slotId: string;
+  label: string;
+  type: string;
+  from: string | number;
+  to: string | number;
+  reason: string;
+}
+interface ProposalResult {
+  changes: ProposalChange[];
+  rejected: Array<{ slotId: string; reason: string }>;
+  summary: string;
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Static config / option lists
@@ -464,6 +481,12 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
 
   /* ── Gate orchestration state (D5) ── */
   const [gate, setGate] = useState<Gate>({ phase: "idle" });
+
+  /* ── LLM-proposal state (D4: the gate's caller) ── */
+  const [proposePrompt, setProposePrompt] = useState("");
+  const [isProposing, setIsProposing] = useState(false);
+  const [proposal, setProposal] = useState<ProposalResult | null>(null);
+  const [proposeError, setProposeError] = useState<string | null>(null);
 
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
@@ -851,6 +874,66 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     setGate({ phase: "awaiting", steps: { ...PENDING, check: "pass", render: "pass", review: "pass" } });
   }, [templateId, jobId, gate.phase]);
 
+  /* ══ LLM proposal (D4 — the gate's caller) ══
+   * Ask GLM (via the relay chat proxy) to propose slot-value edits from a
+   * free-form prompt. The proposal comes back as a diff for review — never
+   * auto-applied. handlePropose only fetches it; the producer Accept/Rejects. */
+  const handlePropose = useCallback(async () => {
+    const id = templateId ?? jobId;
+    if (!id || isProposing || !proposePrompt.trim()) return;
+    setIsProposing(true);
+    setProposeError(null);
+    setProposal(null);
+    try {
+      const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/propose`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: proposePrompt.trim() }),
+      });
+      const data = (await res.json().catch(() => ({}))) as ProposalResult & { error?: string };
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setProposal(data);
+    } catch (e) {
+      setProposeError(e instanceof Error ? e.message : "Proposal failed.");
+    } finally {
+      setIsProposing(false);
+    }
+  }, [templateId, jobId, isProposing, proposePrompt]);
+
+  // Accept the diff: apply locally, persist (deterministic save), then run the
+  // verification gate — an LLM-proposed change is non-deterministic, so it must
+  // pass lint → render → review → approve before it counts (D4/D5).
+  const handleAcceptProposal = useCallback(async () => {
+    if (!proposal || !proposal.changes.length || !manifest?.slotValues) return;
+    const id = templateId ?? jobId;
+    const changes = proposal.changes;
+    // 1. Apply to local editor state so the Slots tab reflects the new values.
+    setManifest((prev) => {
+      if (!prev || !prev.slotValues) return prev;
+      const slotValues = { ...prev.slotValues };
+      for (const c of changes) slotValues[c.slotId] = c.to;
+      return { ...prev, slotValues };
+    });
+    setProposal(null);
+    setProposePrompt("");
+    setProposeError(null);
+    if (!id) return;
+    // 2. Persist (must land before the gate's render reads the saved slotValues).
+    const vals: Record<string, string | number> = {};
+    for (const c of changes) vals[c.slotId] = c.to;
+    try {
+      await fetch(`/api/studio/template/${encodeURIComponent(id)}/values`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values: vals }),
+      });
+    } catch {
+      /* best-effort; the gate still runs */
+    }
+    // 3. Run the verification gate — this is the gate's real caller.
+    handleRunGate();
+  }, [proposal, manifest, templateId, jobId, handleRunGate]);
+
   /* Load the approval state on mount (setState is after await, so it doesn't trip
    * react-hooks/set-state-in-effect). */
   useEffect(() => {
@@ -1185,6 +1268,45 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </div>
               )}
               <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                {/* Ask AI — LLM-proposed slot edits (D4: the gate's caller) */}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "1 1 100%", minWidth: 280, marginBottom: "2px" }}>
+                  <input
+                    value={proposePrompt}
+                    onChange={(e) => setProposePrompt(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void handlePropose();
+                      }
+                    }}
+                    placeholder="Ask AI to edit — e.g. “deal status to AVAILABLE, warmer accent colour”"
+                    disabled={isProposing}
+                    style={{ ...inputStyle, flex: 1, fontWeight: 500, textTransform: "none" }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handlePropose}
+                    disabled={isProposing || !proposePrompt.trim()}
+                    style={{
+                      ...renderBtnStyle,
+                      padding: "12px 18px",
+                      opacity: isProposing || !proposePrompt.trim() ? 0.7 : 1,
+                      cursor: isProposing || !proposePrompt.trim() ? "not-allowed" : "pointer",
+                    }}
+                    title="Ask the AI to propose slot edits — you review the diff before it applies"
+                  >
+                    {isProposing ? (
+                      <>
+                        <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+                        Thinking…
+                      </>
+                    ) : (
+                      <>
+                        <Bot size={18} /> Ask AI
+                      </>
+                    )}
+                  </button>
+                </div>
                 <div style={{ fontSize: "0.7rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
                   {manifest.beats.length} beats · {totalDuration.toFixed(1)}s
                 </div>
@@ -1352,6 +1474,19 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             onClose={() => {
               setInspectReport(null);
               setInspectError(null);
+            }}
+          />
+        )}
+
+        {/* ── LLM proposal modal (D4: review the diff before applying) ── */}
+        {(proposal || proposeError) && !isProposing && (
+          <ProposeModal
+            proposal={proposal}
+            error={proposeError}
+            onAccept={handleAcceptProposal}
+            onReject={() => {
+              setProposal(null);
+              setProposeError(null);
             }}
           />
         )}
@@ -1559,6 +1694,168 @@ function InspectModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Sub-component: ProposeModal — LLM-proposed slot-edit diff (D4)
+ * Shows the GLM-proposed slot changes (old → new + reason) for the producer to
+ * Accept (apply + persist + run the gate) or Reject. Schema-rejected proposals
+ * are listed. Nothing applies until Accept.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+function ProposeModal({
+  proposal,
+  error,
+  onAccept,
+  onReject,
+}: {
+  proposal: ProposalResult | null;
+  error: string | null;
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  const changes = proposal?.changes ?? [];
+  const rejected = proposal?.rejected ?? [];
+  const empty = changes.length === 0;
+
+  return (
+    <div style={inspectOverlayStyle}>
+      <div style={inspectModalStyle}>
+        {/* Header */}
+        <div style={inspectHeaderStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={logoBadgeStyle}>
+              <Bot size={18} strokeWidth={2.5} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1.05rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.03em", lineHeight: 1 }}>
+                AI Edit Proposal
+              </div>
+              <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "2px" }}>
+                Review the diff · nothing applies until you accept
+              </div>
+            </div>
+          </div>
+          <button type="button" onClick={onReject} style={closeBtnBase} aria-label="Close proposal">
+            <X size={20} strokeWidth={2.5} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={inspectBodyStyle}>
+          {error && (
+            <div style={errorPillStyle}>
+              <AlertCircle size={15} /> <span style={{ flex: 1 }}>{error}</span>
+            </div>
+          )}
+
+          {!error && proposal?.summary && (
+            <div style={{ fontSize: "0.85rem", fontWeight: 600, color: COLORS.text, padding: "2px 2px 10px" }}>
+              {proposal.summary}
+            </div>
+          )}
+
+          {!error && empty && (
+            <div style={inspectCleanStyle}>
+              <Bot size={40} strokeWidth={2.5} />
+              <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1rem", marginTop: "10px" }}>
+                No slot edits proposed
+              </div>
+              <div style={{ fontSize: "0.8rem", fontWeight: 600, color: COLORS.textMuted, marginTop: "4px" }}>
+                The request needs structural changes the AI can&apos;t make via slots alone.
+              </div>
+            </div>
+          )}
+
+          {!error && !empty && (
+            <div style={inspectListStyle}>
+              {changes.map((c) => (
+                <ProposalChangeRow key={c.slotId} change={c} />
+              ))}
+              {rejected.length > 0 && (
+                <div style={{ borderTop: `2px dashed ${COLORS.textMuted}`, marginTop: "8px", paddingTop: "8px" }}>
+                  <div style={{ fontSize: "0.65rem", fontWeight: 800, color: COLORS.danger, textTransform: "uppercase", marginBottom: "4px" }}>
+                    Rejected by schema ({rejected.length})
+                  </div>
+                  {rejected.map((r, i) => (
+                    <div key={i} style={{ fontSize: "0.72rem", fontWeight: 600, color: COLORS.textMuted, padding: "2px 0" }}>
+                      {r.slotId}: {r.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={footerStyle}>
+          {!empty && (
+            <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
+              {changes.length} change{changes.length === 1 ? "" : "s"} · accept runs the gate
+            </div>
+          )}
+          <div style={{ display: "flex", gap: "10px", marginLeft: "auto" }}>
+            <button type="button" onClick={onReject} style={inspectCloseBtnStyle}>
+              <X size={16} /> Reject
+            </button>
+            <button
+              type="button"
+              onClick={onAccept}
+              disabled={empty}
+              style={{
+                ...renderBtnStyle,
+                backgroundColor: COLORS.success,
+                opacity: empty ? 0.5 : 1,
+                cursor: empty ? "not-allowed" : "pointer",
+              }}
+            >
+              <Check size={16} /> Accept &amp; Run Gate
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProposalChangeRow({ change }: { change: ProposalChange }) {
+  const isColor = change.type === "color";
+  const toStr = String(change.to);
+  const hexOk = /^#?[0-9a-fA-F]{3}$|^#?[0-9a-fA-F]{6}$/.test(toStr);
+  return (
+    <div style={{ padding: "8px 10px", border: BORDER_SM, backgroundColor: COLORS.bg, marginBottom: "6px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <span style={{ fontSize: "0.8rem", fontWeight: 800 }}>{change.label}</span>
+        <span style={{ fontSize: "0.6rem", fontWeight: 800, color: COLORS.textMuted, textTransform: "uppercase", border: `2px solid ${COLORS.textMuted}`, padding: "1px 6px" }}>
+          {change.type}
+        </span>
+        <span style={{ fontSize: "0.8rem", fontFamily: "monospace", color: COLORS.textMuted }}>
+          {String(change.from)}
+        </span>
+        <ArrowRight size={14} style={{ color: COLORS.accent }} />
+        <span style={{ fontSize: "0.85rem", fontFamily: "monospace", fontWeight: 800, color: COLORS.text }}>
+          {toStr}
+        </span>
+        {isColor && hexOk && (
+          <span
+            style={{
+              display: "inline-block",
+              width: "16px",
+              height: "16px",
+              border: `2px solid ${COLORS.border}`,
+              backgroundColor: toStr.startsWith("#") ? toStr : `#${toStr}`,
+            }}
+          />
+        )}
+      </div>
+      {change.reason && (
+        <div style={{ fontSize: "0.72rem", fontWeight: 600, color: COLORS.textMuted, marginTop: "4px" }}>
+          {change.reason}
+        </div>
+      )}
     </div>
   );
 }
