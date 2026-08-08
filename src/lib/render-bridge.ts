@@ -355,6 +355,60 @@ export async function setApproval(
   return parsed as ApprovalState;
 }
 
+/**
+ * Delivery record (delivery-enforcement — architecture: "nothing ships without
+ * approval"). `delivered` = a cut has been delivered; `current` = the delivered
+ * mp4 is still the latest render (a newer render → stale; re-approve + re-deliver).
+ */
+export interface DeliveryState {
+  delivered: boolean;
+  mp4?: string | null;
+  deliveredAt?: string | null;
+  approvalMp4?: string | null;
+  score?: number | null;
+  current: boolean;
+}
+
+/** GET /video-deliver/:id — read the delivery record (whether + which cut shipped). */
+export async function getDelivery(videoName: string): Promise<DeliveryState> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-deliver/${encodeURIComponent(videoName)}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for delivery ${videoName}`, parsed);
+  }
+  return parsed as DeliveryState;
+}
+
+/**
+ * POST /video-deliver/:id — deliver the current APPROVED render. Enforced
+ * server-side: the relay returns 403 unless the latest render is approved AND the
+ * approval is current (a newer render re-opens the gate). Throws RelayError(403)
+ * when the gate blocks delivery (the route passes it through to the editor).
+ */
+export async function deliver(videoName: string): Promise<DeliveryState> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-deliver/${encodeURIComponent(videoName)}`, {
+      method: "POST",
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for delivery ${videoName}`, parsed);
+  }
+  return parsed as DeliveryState;
+}
+
 /** Map a thrown RelayError (or unexpected error) to a NextResponse, passing the
  * upstream status + body through so callers see the real relay verdict (409, 404…). */
 export function relayErrorResponse(e: unknown) {

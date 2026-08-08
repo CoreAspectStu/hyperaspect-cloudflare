@@ -40,6 +40,7 @@ import {
   Wand2,
   Bot,
   ArrowRight,
+  Send,
 } from "lucide-react";
 import type { Slot, Track } from "@/lib/template-store/types";
 
@@ -205,6 +206,15 @@ interface ApprovalState {
   score?: number | null;
   at?: string | null;
   current: boolean; // approval is for the latest render
+}
+/* ── Delivery record (delivery-enforcement: nothing ships without approval) ── */
+interface DeliveryState {
+  delivered: boolean;
+  mp4?: string | null;
+  deliveredAt?: string | null;
+  approvalMp4?: string | null;
+  score?: number | null;
+  current: boolean; // delivered mp4 is still the latest render
 }
 
 /* ── Gate orchestration (D5: chain lint→render→vision-QA→approve) ── */
@@ -496,6 +506,11 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const [proposal, setProposal] = useState<ProposePayload | null>(null);
   const [proposeError, setProposeError] = useState<string | null>(null);
 
+  /* ── Delivery state (delivery-enforcement; nothing ships without approval) ── */
+  const [delivery, setDelivery] = useState<DeliveryState | null>(null);
+  const [isDelivering, setIsDelivering] = useState(false);
+  const [deliverError, setDeliverError] = useState<string | null>(null);
+
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
     let cancelled = false;
@@ -784,6 +799,28 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     [templateId, jobId, reviewReport, isApproving],
   );
 
+  /* ══ Deliver (delivery-enforcement — nothing ships without approval) ══
+   * POSTs /deliver; the relay ENFORCES server-side (403 unless the latest render
+   * is approved + current). The button is also UI-gated on approval. */
+  const handleDeliver = useCallback(async () => {
+    const id = templateId ?? jobId;
+    if (!id || isDelivering) return;
+    setIsDelivering(true);
+    setDeliverError(null);
+    try {
+      const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/deliver`, {
+        method: "POST",
+      });
+      const data = (await res.json().catch(() => ({}))) as DeliveryState & { error?: string };
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setDelivery(data);
+    } catch (e) {
+      setDeliverError(e instanceof Error ? e.message : "Deliver failed.");
+    } finally {
+      setIsDelivering(false);
+    }
+  }, [templateId, jobId, isDelivering]);
+
   /* ══ Gate orchestration (D5): chain check → render → review → awaiting-approve ══ */
   const cancelGate = useCallback(() => setGate({ phase: "idle" }), []);
 
@@ -990,8 +1027,10 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
       try {
         const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/approve`);
         if (!cancelled && res.ok) setApproval((await res.json()) as ApprovalState);
+        const dres = await fetch(`/api/studio/template/${encodeURIComponent(id)}/deliver`);
+        if (!cancelled && dres.ok) setDelivery((await dres.json()) as DeliveryState);
       } catch {
-        /* approval is advisory in the UI — ignore transient errors */
+        /* approval/delivery are advisory in the UI — ignore transient errors */
       }
     })();
     return () => {
@@ -1008,6 +1047,8 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
       try {
         const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/approve`);
         if (!cancelled && res.ok) setApproval((await res.json()) as ApprovalState);
+        const dres = await fetch(`/api/studio/template/${encodeURIComponent(id)}/deliver`);
+        if (!cancelled && dres.ok) setDelivery((await dres.json()) as DeliveryState);
       } catch {
         /* advisory */
       }
@@ -1273,6 +1314,13 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             {/* ════ FOOTER: render + status ════ */}
             <div style={footerStyle}>
               {approval && <ApprovalBadge approval={approval} />}
+              {delivery?.delivered && <DeliveryBadge delivery={delivery} />}
+              {deliverError && (
+                <div style={errorPillStyle}>
+                  <AlertCircle size={15} /> <span style={{ flex: 1 }}>{deliverError}</span>
+                  <button type="button" onClick={() => setDeliverError(null)} style={dismissBtnStyle}>Dismiss</button>
+                </div>
+              )}
               {gate.phase !== "idle" && <GatePanel gate={gate} onDismiss={cancelGate} />}
               {(renderPhase === "queued" || renderPhase === "running") && (
                 <div style={successPillStyle}>
@@ -1503,6 +1551,34 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                   ) : (
                     <>
                       <Wand2 size={18} /> Run Gate
+                    </>
+                  )}
+                </button>
+                {/* Deliver (delivery-enforcement): gated on a current APPROVED render. */}
+                <button
+                  type="button"
+                  onClick={handleDeliver}
+                  disabled={!(approval?.current && approval?.status === "approved") || isDelivering}
+                  style={{
+                    ...renderBtnStyle,
+                    backgroundColor: COLORS.success,
+                    opacity: !(approval?.current && approval?.status === "approved") || isDelivering ? 0.5 : 1,
+                    cursor: !(approval?.current && approval?.status === "approved") || isDelivering ? "not-allowed" : "pointer",
+                  }}
+                  title={
+                    approval?.current && approval?.status === "approved"
+                      ? "Deliver the current approved render (nothing ships without approval)"
+                      : "Approve the current render to deliver"
+                  }
+                >
+                  {isDelivering ? (
+                    <>
+                      <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+                      Delivering…
+                    </>
+                  ) : (
+                    <>
+                      <Send size={18} /> Deliver
                     </>
                   )}
                 </button>
@@ -2395,6 +2471,36 @@ function ApprovalBadge({ approval }: { approval: ApprovalState }) {
           : s === "rejected"
             ? "Rejected"
             : "Pending approval"}
+      </span>
+    </div>
+  );
+}
+
+/** Delivery record pill (delivery-enforcement). `current` false = a newer render
+ *  made the delivered cut stale (re-approve + re-deliver). */
+function DeliveryBadge({ delivery }: { delivery: DeliveryState }) {
+  const st = delivery.current
+    ? successPillStyle
+    : {
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "6px 12px",
+        background: "#fff3cd",
+        color: "#8a6d00",
+        borderRadius: "6px",
+        fontSize: "0.7rem",
+        fontWeight: 900,
+        textTransform: "uppercase",
+        letterSpacing: "0.03em",
+      };
+  return (
+    <div style={st}>
+      {delivery.current ? <Send size={15} /> : <AlertCircle size={15} />}
+      <span style={{ flex: 1 }}>
+        {delivery.current
+          ? `Delivered · ${delivery.mp4 ?? ""}`
+          : "Delivered cut stale — re-approve + re-deliver"}
       </span>
     </div>
   );
