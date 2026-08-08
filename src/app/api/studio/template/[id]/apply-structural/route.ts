@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStore } from "@/lib/template-store/store";
 import { applyStructuralEdits, type StructuralEdit } from "@/lib/template-store/project";
-import { stageComposition, relayErrorResponse } from "@/lib/render-bridge";
+import { stageComposition, getTemplateHtml, relayErrorResponse } from "@/lib/render-bridge";
 
 /**
  * POST /api/studio/template/[id]/apply-structural — apply a producer-ACCEPTED set
@@ -47,12 +47,29 @@ export async function POST(
   }
 
   // Persist (durable) + stage (so the gate renders the patched composition).
+  // DURABILITY: also project the same edits onto the _templates mustache source so
+  // a later slot rerender (recompose from _templates) preserves the structural
+  // change. Attribute patches land identically; {{token}} text is refused by the
+  // projection (harmless — that's a slot, edited via slots). Unbound template → skip.
+  let templatePatched = false;
   try {
     await store.saveComposition(id, result.html);
-    await stageComposition(id, result.html);
+    let templateHtml: string | undefined;
+    const tpl = await getTemplateHtml(id);
+    if (tpl) {
+      const tplResult = applyStructuralEdits(tpl, edits as StructuralEdit[]);
+      if (tplResult.diff.length) templateHtml = tplResult.html;
+    }
+    await stageComposition(id, result.html, templateHtml);
+    templatePatched = !!templateHtml;
   } catch (e) {
     return relayErrorResponse(e);
   }
 
-  return NextResponse.json({ ok: true, diff: result.diff, errors: result.errors });
+  return NextResponse.json({
+    ok: true,
+    diff: result.diff,
+    errors: result.errors,
+    templatePatched,
+  });
 }

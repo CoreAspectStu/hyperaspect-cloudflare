@@ -107,20 +107,49 @@ export async function enqueueRender(
 }
 
 /**
- * POST /video-stage/:id { html } — stage a patched composition (brick 15 structural
- * edits). The relay writes the HTML to videos/<id>/index.html (backing up the prior
- * one), so the next render renders the patched composition. The app owns the
- * projection (project.ts); the relay just writes the file. Throws RelayError(502)
- * if the relay is unreachable, RelayError(4xx/5xx) on a relay refusal.
+ * POST /video-stage/:id { html, templateHtml? } — stage a patched composition
+ * (brick 15 structural edits). The relay writes `html` to videos/<id>/index.html
+ * (the render target). If `templateHtml` is provided it is ALSO written to the
+ * `_templates/<id>/index.html` mustache source (durability: so a later slot
+ * rerender — which recomposes from `_templates` — preserves the structural
+ * change). The app owns the projection; the relay just writes the files.
  */
-export async function stageComposition(videoName: string, html: string): Promise<void> {
-  const { resp, parsed } = await postJson(
-    `/video-stage/${encodeURIComponent(videoName)}`,
-    { html },
-  );
+export async function stageComposition(
+  videoName: string,
+  html: string,
+  templateHtml?: string,
+): Promise<{ ok: boolean; templateWritten?: boolean }> {
+  const { resp, parsed } = await postJson(`/video-stage/${encodeURIComponent(videoName)}`, {
+    html,
+    ...(templateHtml ? { templateHtml } : {}),
+  });
   if (!resp.ok) {
     throw new RelayError(resp.status, `relay ${resp.status} staging ${videoName}`, parsed);
   }
+  return parsed as { ok: boolean; templateWritten?: boolean };
+}
+
+/**
+ * GET /video-template/:id — the mustache `_templates` HTML (the recompose source),
+ * for projecting structural edits durably. Returns null for an unbound template
+ * (no manifest/_templates → no durability; the caller skips the template step).
+ * Throws RelayError(502) if the relay is unreachable.
+ */
+export async function getTemplateHtml(videoName: string): Promise<string | null> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-template/${encodeURIComponent(videoName)}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  if (resp.status === 404) return null; // unbound template — no _templates durability
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for template ${videoName}`, parsed);
+  }
+  return (parsed as { html?: string }).html ?? null;
 }
 
 /** Recompose the composition with `body.variables` (mustache), then enqueue. */
