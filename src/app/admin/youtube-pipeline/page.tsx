@@ -117,13 +117,33 @@ export default function YoutubePipelinePage() {
     }
   }, []);
 
-  // ---- Status polling for the active job ------------------------------------
+  // Active-job id / terminal flag as render-scope primitives so the polling
+  // effects below can depend on stable values instead of the whole `activeJob`
+  // object (which changes on every poll tick and would thrash the effects).
+  const activeJobId = activeJob?.job_id;
+  const jobTerminal =
+    activeJob?.status === "complete" || activeJob?.status === "error";
+
+  // Pure grid fetch (no setState) — reused by the polling effect, the terminal
+  // refresh, and the imperative post-submit refresh below. Keeping setState out
+  // of it lets effects call it without tripping react-hooks/set-state-in-effect.
+  const refreshGrid = useCallback(async (): Promise<Video[]> => {
+    const r = await fetch(API("videos?limit=60"));
+    if (!r.ok) return [];
+    return ((await r.json()).videos || []) as Video[];
+  }, []);
+
+  // ---- Status polling for the active job (FR-4) -----------------------------
+  // Polls GET /status/{job_id} every 2.5s while a job is active. setState lives
+  // inside the async poll() callback (not the effect body) — the React-recommended
+  // "subscribe to an external system" shape — and the `cancelled` flag keeps
+  // stale fetches from touching state after unmount or a job_id change.
   useEffect(() => {
-    if (!activeJob) return;
+    if (!activeJobId) return;
     let cancelled = false;
     const poll = async () => {
       try {
-        const r = await fetch(API(`status/${activeJob.job_id}`));
+        const r = await fetch(API(`status/${activeJobId}`));
         if (r.ok) {
           const data: StatusResp = await r.json();
           if (!cancelled) setActiveJob(data);
@@ -138,32 +158,62 @@ export default function YoutubePipelinePage() {
       cancelled = true;
       clearInterval(iv);
     };
-  }, [activeJob?.job_id]);
+  }, [activeJobId]);
 
+  // Imperative grid refresh used after a fresh submission (handleProcess).
   const fetchVideos = useCallback(async () => {
     try {
-      const r = await fetch(API("videos?limit=60"));
-      if (r.ok) setVideos((await r.json()).videos || []);
+      setVideos(await refreshGrid());
     } catch {
       /* ignore */
     } finally {
       setGridLoading(false);
     }
-  }, []);
+  }, [refreshGrid]);
 
+  // ---- Grid polling ---------------------------------------------------------
+  // Refresh the generated-videos grid every 8s while signed in. Same shape as
+  // the status poll above: setState only inside the async callback + cancelled.
   useEffect(() => {
     if (!authed) return;
-    fetchVideos();
-    const iv = setInterval(fetchVideos, 8000);
-    return () => clearInterval(iv);
-  }, [authed, fetchVideos]);
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const list = await refreshGrid();
+        if (!cancelled) {
+          setVideos(list);
+          setGridLoading(false);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    poll();
+    const iv = setInterval(poll, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [authed, refreshGrid]);
 
-  // Stop polling once the active job reaches a terminal state.
+  // Refresh the grid once when the active job lands in a terminal state, so the
+  // new generation surfaces without waiting for the next poll tick.
   useEffect(() => {
-    if (activeJob && (activeJob.status === "complete" || activeJob.status === "error")) {
-      fetchVideos();
-    }
-  }, [activeJob?.status, fetchVideos]);
+    if (!jobTerminal) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const list = await refreshGrid();
+        if (!cancelled) setVideos(list);
+      } catch {
+        /* ignore */
+      }
+    };
+    refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobTerminal, refreshGrid]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
