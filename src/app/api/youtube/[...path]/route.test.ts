@@ -164,6 +164,76 @@ describe("youtube gateway route", () => {
     expect(String(calledUrl)).toBe("http://127.0.0.1:3001/status/job-9");
   });
 
+  // --- Story 3.3 (FR-7): comment/feedback forwarding ------------------------
+  // The /admin/youtube-pipeline grid posts structured feedback to
+  // POST /api/youtube/videos/{job_id}/comments; the gateway must forward the
+  // three-segment path (incl. the UUID job_id), the comment JSON body, and pass
+  // the backend's 201 back to the client. Auth still gates the comment POST.
+
+  it("proxies an authenticated comment POST to /videos/{job_id}/comments (201 passthrough)", async () => {
+    const fetchMock = fakeUpstream(
+      {
+        comment_id: "cmt-1",
+        job_id: "11111111-2222-3333-4444-555555555555",
+        body: "Neon looks great",
+        visuals: "good",
+        audio_sync: "yes",
+        created_at: "2026-08-09T00:00:00Z",
+      },
+      { status: 201 },
+    );
+    globalThis.fetch = fetchMock;
+
+    const jobId = "11111111-2222-3333-4444-555555555555";
+    const payload = JSON.stringify({
+      body: "Neon looks great",
+      visuals: "good",
+      audio_sync: "yes",
+    });
+    const req = makeReq({
+      url: `http://localhost/api/youtube/videos/${jobId}/comments`,
+      method: "POST",
+      body: payload,
+      cookie: "ha-auth=ok",
+      contentType: "application/json",
+    });
+
+    const res = await POST(req, ctx(["videos", jobId, "comments"]));
+
+    // The Python backend persists the comment and returns 201; pass it through.
+    expect(res.status).toBe(201);
+    expect((await res.json()).comment_id).toBe("cmt-1");
+
+    // The three-segment comment path (with the hyphenated UUID intact) lands on
+    // the Python service verbatim — encodeURIComponent leaves UUID hyphens as-is.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledUrl, init] = (
+      fetchMock as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as [URL, RequestInit];
+    expect(String(calledUrl)).toBe(
+      `http://127.0.0.1:3001/videos/${jobId}/comments`,
+    );
+    expect(init.method).toBe("POST");
+    // The comment JSON (body + structured visuals/audio_sync) is forwarded as-is.
+    expect(init.body).toBe(payload);
+  });
+
+  it("still requires the ha-auth cookie to post a comment (401, never reaches the backend)", async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const req = makeReq({
+      url: "http://localhost/api/youtube/videos/some-job/comments",
+      method: "POST",
+      body: JSON.stringify({ body: "x" }),
+      contentType: "application/json",
+      // no ha-auth cookie
+    });
+    const res = await POST(req, ctx(["videos", "some-job", "comments"]));
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   // --- Resilience -----------------------------------------------------------
 
   it("returns 502 when the Python service is unreachable", async () => {
