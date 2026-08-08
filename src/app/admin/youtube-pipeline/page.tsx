@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { extractYouTubeId, youtubeEmbedUrl } from "@/lib/youtube";
+import {
+  extractYouTubeId,
+  playbackHref,
+  videoPoster,
+  youtubeEmbedUrl,
+} from "@/lib/youtube";
 
 /**
  * /admin/youtube-pipeline — youtube-ai-video integration (PRD §3.1, ADR-006).
@@ -575,9 +580,14 @@ function VideoCard({ video }: { video: Video }) {
   const [visuals, setVisuals] = useState<string>("");
   const [audioSync, setAudioSync] = useState<string>("");
   const [commentPosted, setCommentPosted] = useState(false);
+  const [playerOpen, setPlayerOpen] = useState(false);
 
   const meta = STATUS_META[video.status] || { bg: C.gray, label: video.status };
-  const videoHref = video.final_video_url ? API(video.final_video_url.replace(/^\//, "")) : null;
+  const videoHref = playbackHref(video.final_video_url);
+  // Poster gives the card an instant thumbnail (source YouTube frame) before
+  // the generated MP4 metadata would load; null lets <video> fall back to its
+  // own first frame. See src/lib/youtube.ts (FR-6, ADR-006).
+  const poster = videoPoster(video);
 
   async function loadDetail() {
     if (detail) { setExpanded((v) => !v); return; }
@@ -605,10 +615,29 @@ function VideoCard({ video }: { video: Video }) {
 
   return (
     <div style={{ background: C.paper, border: BORDER, boxShadow: SHADOW, padding: "14px", display: "flex", flexDirection: "column" }}>
-      {/* Thumbnail / player */}
-      <div style={{ border: BORDER_SM, background: "#1a1a1a", aspectRatio: "16 / 9", marginBottom: "10px", overflow: "hidden" }}>
+      {/* Thumbnail / click-to-open player */}
+      <div style={{ border: BORDER_SM, background: "#1a1a1a", aspectRatio: "16 / 9", marginBottom: "10px", overflow: "hidden", position: "relative" }}>
         {videoHref ? (
-          <video src={videoHref} controls preload="metadata" style={{ width: "100%", height: "100%", display: "block" }} />
+          <button
+            type="button"
+            onClick={() => setPlayerOpen(true)}
+            aria-label={`Play generated video ${video.job_id.slice(0, 8)}`}
+            style={{ width: "100%", height: "100%", padding: 0, border: "none", background: "none", cursor: "pointer", display: "block", position: "relative" }}
+          >
+            {poster ? (
+              // External thumbnail (YouTube source frame or backend thumbnail_url)
+              // of variable host — next/image would need brittle remotePatterns config.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={poster} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+            ) : (
+              // No poster available — show the generated video's own first frame.
+              <video src={videoHref} preload="metadata" muted playsInline tabIndex={-1} aria-hidden style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", pointerEvents: "none" }} />
+            )}
+            {/* Play affordance */}
+            <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+              <span style={{ width: "52px", height: "52px", display: "flex", alignItems: "center", justifyContent: "center", background: C.red, color: C.paper, border: BORDER_SM, boxShadow: SHADOW_SM, fontSize: "20px", paddingLeft: "5px" }}>▶</span>
+            </span>
+          </button>
         ) : (
           <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: C.gray, fontWeight: 800, fontSize: "12px" }}>⏳ {meta.label}</div>
         )}
@@ -655,11 +684,71 @@ function VideoCard({ video }: { video: Video }) {
           )}
         </div>
       )}
+
+      {playerOpen && videoHref && (
+        <VideoPlayerModal
+          href={videoHref}
+          poster={poster}
+          jobLabel={video.job_id}
+          meta={meta}
+          onClose={() => setPlayerOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
-// --- Small primitives --------------------------------------------------------
+// --- Modal player (click-to-open playback, ADR-006) --------------------------
+function VideoPlayerModal({
+  href,
+  poster,
+  jobLabel,
+  meta,
+  onClose,
+}: {
+  href: string;
+  poster: string | null;
+  jobLabel: string;
+  meta: { bg: string; label: string };
+  onClose: () => void;
+}) {
+  // Close on Escape and lock body scroll while the player is mounted.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(10,10,10,0.82)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: C.paper, border: BORDER, boxShadow: SHADOW, width: "100%", maxWidth: "920px" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", padding: "10px 14px", borderBottom: BORDER_SM, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <span style={{ background: meta.bg, color: C.ink, border: "2px solid #0a0a0a", padding: "2px 8px", fontSize: "10px", fontWeight: 900, textTransform: "uppercase" }}>{meta.label}</span>
+            <code style={{ fontSize: "11px", fontWeight: 800, color: C.gray, wordBreak: "break-all" }}>{jobLabel}</code>
+          </div>
+          <button onClick={onClose} style={{ ...btnGhost, fontSize: "12px", padding: "5px 12px" }}>✕ Close</button>
+        </div>
+        <div style={{ background: "#000" }}>
+          <video src={href} poster={poster ?? undefined} controls autoPlay playsInline style={{ width: "100%", height: "100%", aspectRatio: "16 / 9", display: "block" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
 function Panel({ title, emoji, children }: { title: string; emoji: string; children: React.ReactNode }) {
   return (
     <section style={{ background: C.paper, border: BORDER, boxShadow: SHADOW, padding: "18px" }}>
