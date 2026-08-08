@@ -36,6 +36,7 @@ import {
   Move,
   ScanSearch,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import type { Slot, Track } from "@/lib/template-store/types";
 
@@ -169,6 +170,17 @@ interface CheckReport {
   warningCount?: number;
   infoCount?: number;
   findings?: CheckFinding[];
+}
+
+/* ── Vision-QA report (from hf-adversarial-review.py via /api/.../review) ── */
+interface ReviewReport {
+  average_score?: number; // 0-10
+  passed?: boolean;
+  threshold?: number;
+  frames_reviewed?: number;
+  per_frame?: Array<{ score?: number; issues?: string[]; fix_needed?: boolean }>;
+  all_issues?: string[];
+  fixes?: Array<{ priority?: string; issue?: string; fix?: string }>;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -402,6 +414,11 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const [checkReport, setCheckReport] = useState<CheckReport | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
 
+  /* ── Vision-QA gate (D5 step 3) state ── */
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [reviewReport, setReviewReport] = useState<ReviewReport | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
     let cancelled = false;
@@ -624,6 +641,38 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
       setIsChecking(false);
     }
   }, [templateId, jobId, isChecking]);
+
+  /* ══ Vision-QA gate (D5 step 3) — async: 202 while the GLM review runs ══ */
+  const handleReview = useCallback(async () => {
+    const id = templateId ?? jobId;
+    if (isReviewing || !id) return;
+    setIsReviewing(true);
+    setReviewError(null);
+    setReviewReport(null);
+    let got = false;
+    try {
+      // The relay returns 200 once a fresh report is cached, or 202 while a
+      // detached review runs (~30s warm → minutes cold). Poll until 200.
+      for (let i = 0; i < 40; i++) {
+        const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/review`);
+        if (res.status === 200) {
+          setReviewReport((await res.json()) as ReviewReport);
+          got = true;
+          break;
+        }
+        if (res.status !== 202) {
+          const txt = await res.text().catch(() => "");
+          throw new Error(`Review failed (HTTP ${res.status})${txt ? `: ${txt.slice(0, 150)}` : ""}`);
+        }
+        await new Promise((r) => setTimeout(r, 8000));
+      }
+      if (!got) setReviewError("Review is still running on the farm — click Review again shortly.");
+    } catch (e) {
+      setReviewError(e instanceof Error ? e.message : "Review failed unexpectedly.");
+    } finally {
+      setIsReviewing(false);
+    }
+  }, [templateId, jobId, isReviewing]);
 
   /* ══ Render (render bridge → relay → core-control farm → mp4) ══ */
   const handleRender = useCallback(async () => {
@@ -973,6 +1022,28 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </button>
                 <button
                   type="button"
+                  onClick={handleReview}
+                  disabled={isReviewing}
+                  style={{
+                    ...inspectBtnStyle,
+                    opacity: isReviewing ? 0.7 : 1,
+                    cursor: isReviewing ? "not-allowed" : "pointer",
+                  }}
+                  title="Run the vision-QA gate (GLM reviews 12 rendered frames)"
+                >
+                  {isReviewing ? (
+                    <>
+                      <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+                      Reviewing…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={18} /> Review
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
                   onClick={handleRender}
                   disabled={!renderId || renderBusy}
                   style={{
@@ -1045,6 +1116,21 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
           />
         )}
 
+        {/* ── Review overlay (running) ── */}
+        {isReviewing && (
+          <div style={rerenderOverlayStyle}>
+            <div style={{ ...rerenderCardStyle, backgroundColor: COLORS.bg, color: COLORS.text }}>
+              <Loader2 size={44} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+              <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1.1rem", letterSpacing: "0.03em", marginTop: "16px" }}>
+                Running vision-QA…
+              </div>
+              <div style={{ fontSize: "0.85rem", fontWeight: 600, opacity: 0.8, marginTop: "6px" }}>
+                GLM-4.6V is scoring 12 rendered frames. This can take a minute.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── Check results modal (lint gate) ── */}
         {(checkReport || checkError) && !isChecking && (
           <CheckModal
@@ -1053,6 +1139,18 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             onClose={() => {
               setCheckReport(null);
               setCheckError(null);
+            }}
+          />
+        )}
+
+        {/* ── Review results modal (vision-QA) ── */}
+        {(reviewReport || reviewError) && !isReviewing && (
+          <ReviewModal
+            report={reviewReport}
+            error={reviewError}
+            onClose={() => {
+              setReviewReport(null);
+              setReviewError(null);
             }}
           />
         )}
@@ -1332,6 +1430,164 @@ function CheckFindingRow({ finding }: { finding: CheckFinding }) {
         {finding.message && (
           <div style={{ fontSize: "0.78rem", color: COLORS.textMuted, marginTop: "2px" }}>{finding.message}</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Sub-component: ReviewModal — vision-QA results (D5 step 3)
+ * GLM-4.6V scored 12 rendered frames 0-10; shows verdict, score, per-frame bars,
+ * issues, and recommended (P0/P1/P2) fixes.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+function ReviewModal({
+  report,
+  error,
+  onClose,
+}: {
+  report: ReviewReport | null;
+  error: string | null;
+  onClose: () => void;
+}) {
+  const score = report?.average_score ?? 0;
+  const passed = report?.passed ?? false;
+  const frames = report?.per_frame ?? [];
+  const issues = report?.all_issues ?? [];
+  const fixes = report?.fixes ?? [];
+  const verdictColor = passed ? "#1d8a3a" : "#b00020";
+  const barColor = (s: number) => (s >= 8 ? "#1d8a3a" : s >= 6 ? "#caa000" : "#b00020");
+  const prioColor = (p: string) =>
+    p === "P0" ? "#b00020" : p === "P1" ? "#8a6d00" : "#1d3a8a";
+
+  return (
+    <div style={inspectOverlayStyle}>
+      <div style={inspectModalStyle}>
+        {/* Header */}
+        <div style={inspectHeaderStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={logoBadgeStyle}>
+              <Sparkles size={18} strokeWidth={2.5} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1.05rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.03em", lineHeight: 1 }}>
+                Vision-QA Review
+              </div>
+              <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "2px" }}>
+                Realism · Craft gate (D5)
+              </div>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} style={closeBtnBase} aria-label="Close review">
+            <X size={20} strokeWidth={2.5} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={inspectBodyStyle}>
+          {error && (
+            <div style={errorPillStyle}>
+              <AlertCircle size={15} /> <span style={{ flex: 1 }}>{error}</span>
+            </div>
+          )}
+
+          {!error && report && (
+            <>
+              {/* Verdict + score */}
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "12px" }}>
+                <div style={{ fontSize: "2rem", fontWeight: 900, color: verdictColor, lineHeight: 1 }}>
+                  {passed ? "✓" : "✗"}
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.78rem", fontWeight: 900, textTransform: "uppercase", color: verdictColor, letterSpacing: "0.03em" }}>
+                    {passed ? "Passed" : "Needs Fix"}
+                  </div>
+                  <div style={{ fontSize: "1.4rem", fontWeight: 900 }}>
+                    {score.toFixed(1)}
+                    <span style={{ fontSize: "0.78rem", color: COLORS.textMuted, fontWeight: 700 }}>
+                      /10 · {report.frames_reviewed ?? frames.length} frames
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Per-frame score bars */}
+              {frames.length > 0 && (
+                <div style={{ display: "flex", gap: "3px", marginBottom: "12px" }}>
+                  {frames.map((f, i) => {
+                    const s = f.score ?? 0;
+                    return (
+                      <div
+                        key={i}
+                        title={`Frame ${i + 1}: ${s}/10`}
+                        style={{ flex: 1, height: "28px", background: "#eee", borderRadius: "2px", position: "relative", overflow: "hidden" }}
+                      >
+                        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: `${(s / 10) * 100}%`, background: barColor(s) }} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Issues */}
+              {issues.length > 0 && (
+                <>
+                  <div style={{ fontSize: "0.7rem", fontWeight: 900, textTransform: "uppercase", color: COLORS.textMuted, marginBottom: "6px" }}>
+                    Issues ({issues.length})
+                  </div>
+                  <div style={inspectListStyle}>
+                    {issues.slice(0, 8).map((iss, i) => (
+                      <div key={i} style={{ padding: "6px 8px", borderBottom: "1px solid rgba(0,0,0,0.08)", fontSize: "0.78rem", color: COLORS.text }}>
+                        {iss}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Recommended fixes */}
+              {fixes.length > 0 && (
+                <>
+                  <div style={{ fontSize: "0.7rem", fontWeight: 900, textTransform: "uppercase", color: COLORS.textMuted, margin: "12px 0 6px" }}>
+                    Recommended Fixes
+                  </div>
+                  <div style={inspectListStyle}>
+                    {fixes.map((fx, i) => {
+                      const pr = (fx.priority || "").toUpperCase();
+                      return (
+                        <div key={i} style={{ padding: "8px", borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
+                          <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+                            {pr && (
+                              <span style={{ fontSize: "0.6rem", fontWeight: 900, color: prioColor(pr), border: `1px solid ${prioColor(pr)}`, padding: "1px 5px", borderRadius: "2px", flexShrink: 0 }}>
+                                {pr}
+                              </span>
+                            )}
+                            <span style={{ fontSize: "0.78rem", fontWeight: 700, color: COLORS.text }}>{fx.issue}</span>
+                          </div>
+                          {fx.fix && (
+                            <div style={{ fontSize: "0.74rem", color: COLORS.textMuted, marginTop: "3px", marginLeft: pr ? "32px" : 0 }}>
+                              {fx.fix}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={footerStyle}>
+          <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
+            Powered by GLM-4.6V
+          </div>
+          <button type="button" onClick={onClose} style={inspectCloseBtnStyle}>
+            <X size={16} /> Close
+          </button>
+        </div>
       </div>
     </div>
   );

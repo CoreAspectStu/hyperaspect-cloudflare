@@ -222,6 +222,53 @@ export async function getCheckReport(videoName: string): Promise<CheckReport> {
   return parsed as CheckReport;
 }
 
+/** Vision-QA report from hf-adversarial-review.py (GLM-4.6V scores 12 key frames). */
+export interface ReviewReport {
+  video?: string;
+  average_score: number; // 0-10
+  passed: boolean;
+  threshold: number;
+  frames_reviewed: number;
+  per_frame?: Array<{
+    score: number;
+    issues?: string[];
+    strengths?: string[];
+    fix_needed?: boolean;
+  }>;
+  all_issues?: string[];
+  fixes?: Array<{ priority?: string; issue?: string; fix?: string }>;
+}
+
+/**
+ * GET /video-review/:id — vision-QA gate (D5 step 3). Async: returns the cached
+ * report if fresh (`ready: true`), or `{ ready: false }` (HTTP 202) if a review is
+ * running on the relay (the editor polls). Throws RelayError(404) if there's no
+ * rendered mp4 to review, RelayError(502) if the relay is unreachable.
+ */
+export async function getReviewReport(
+  videoName: string,
+): Promise<{ ready: boolean; report?: ReviewReport }> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-review/${encodeURIComponent(videoName)}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+
+  const parsed = await parseBody(resp);
+  if (resp.status === 202) return { ready: false };
+  if (!resp.ok) {
+    throw new RelayError(
+      resp.status,
+      `relay ${resp.status} for review ${videoName}`,
+      parsed,
+    );
+  }
+  return { ready: true, report: parsed as ReviewReport };
+}
+
 /** Map a thrown RelayError (or unexpected error) to a NextResponse, passing the
  * upstream status + body through so callers see the real relay verdict (409, 404…). */
 export function relayErrorResponse(e: unknown) {
