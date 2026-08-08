@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { extractYouTubeId, youtubeEmbedUrl } from "@/lib/youtube";
+
 /**
  * /admin/youtube-pipeline — youtube-ai-video integration (PRD §3.1, ADR-006).
  *
@@ -78,13 +80,6 @@ const STATUS_META: Record<string, { bg: string; label: string }> = {
   error: { bg: C.red, label: "Error" },
 };
 
-function extractYouTubeId(url: string): string | null {
-  const m = url.match(
-    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
-  );
-  return m ? m[1] : null;
-}
-
 export default function YoutubePipelinePage() {
   const [authed, setAuthed] = useState(false);
   const [pw, setPw] = useState("");
@@ -104,6 +99,10 @@ export default function YoutubePipelinePage() {
   const [submitting, setSubmitting] = useState(false);
   const [activeJob, setActiveJob] = useState<StatusResp | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // The most recently submitted source URL — backs the source-video preview so
+  // it stays visible even after the input is cleared (e.g. while queuing the
+  // next URL), keeping the original on screen for comparison (FR-5, NFR-2).
+  const [submittedUrl, setSubmittedUrl] = useState("");
 
   // Grid
   const [videos, setVideos] = useState<Video[]>([]);
@@ -270,6 +269,9 @@ export default function YoutubePipelinePage() {
         total_cost_usd: null,
         error: null,
       });
+      // Remember the submitted source so the preview keeps showing it after the
+      // input is cleared (e.g. while queuing the next URL) — FR-5 source display.
+      setSubmittedUrl(url);
       fetchVideos();
     } catch (err: unknown) {
       setSubmitError(err instanceof Error ? err.message : "Submission failed");
@@ -278,7 +280,12 @@ export default function YoutubePipelinePage() {
     }
   }
 
-  const sourceId = useMemo(() => extractYouTubeId(url), [url]);
+  // The Process button gates on the INPUT alone (an empty/invalid input must
+  // never submit), while the source-video preview falls back to the last
+  // submitted URL so the embedded source stays visible after the input is
+  // cleared (FR-5).
+  const inputId = useMemo(() => extractYouTubeId(url), [url]);
+  const sourceId = inputId ?? extractYouTubeId(submittedUrl);
 
   // --- Login screen ----------------------------------------------------------
   if (!authed) {
@@ -465,7 +472,7 @@ GET  /api/youtube/videos`}</pre>
                 <div style={{ background: C.red, color: C.paper, border: BORDER_SM, padding: "8px 12px", fontWeight: 800, fontSize: "12px", textTransform: "uppercase", marginBottom: "12px", boxShadow: SHADOW_SM }}>⚠ {submitError}</div>
               )}
 
-              <button onClick={handleProcess} disabled={submitting || !sourceId} style={{ width: "100%", padding: "16px", background: submitting || !sourceId ? "#c9b9bd" : C.red, color: C.paper, border: BORDER_SM, boxShadow: SHADOW_SM, fontWeight: 900, fontSize: "16px", cursor: submitting || !sourceId ? "not-allowed" : "pointer", textTransform: "uppercase", letterSpacing: "1px" }}>
+              <button onClick={handleProcess} disabled={submitting || !inputId} style={{ width: "100%", padding: "16px", background: submitting || !inputId ? "#c9b9bd" : C.red, color: C.paper, border: BORDER_SM, boxShadow: SHADOW_SM, fontWeight: 900, fontSize: "16px", cursor: submitting || !inputId ? "not-allowed" : "pointer", textTransform: "uppercase", letterSpacing: "1px" }}>
                 {submitting ? "Submitting…" : "▶ Process Video"}
               </button>
             </Panel>
@@ -475,10 +482,12 @@ GET  /api/youtube/videos`}</pre>
               {sourceId ? (
                 <div style={{ border: BORDER, boxShadow: SHADOW_SM, aspectRatio: "16 / 9", background: "#000", overflow: "hidden" }}>
                   <iframe
-                    src={`https://www.youtube.com/embed/${sourceId}`}
+                    src={youtubeEmbedUrl(sourceId) ?? undefined}
                     title="Source YouTube video"
+                    loading="lazy"
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                     allowFullScreen
+                    referrerPolicy="strict-origin-when-cross-origin"
                     style={{ width: "100%", height: "100%", border: "none", display: "block" }}
                   />
                 </div>
