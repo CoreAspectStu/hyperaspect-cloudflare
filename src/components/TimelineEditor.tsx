@@ -165,11 +165,22 @@ interface CheckFinding {
 }
 
 interface CheckReport {
-  ok?: boolean;
-  errorCount?: number;
-  warningCount?: number;
-  infoCount?: number;
-  findings?: CheckFinding[];
+  ok?: boolean; // lint.ok && validate.ok
+  lint?: {
+    ok?: boolean;
+    errorCount?: number;
+    warningCount?: number;
+    infoCount?: number;
+    findings?: CheckFinding[];
+  };
+  validate?: {
+    ok?: boolean; // renders without error
+    errorCount?: number;
+    warningCount?: number;
+    contrastFailures?: number;
+    errors?: Array<{ message?: string; [k: string]: unknown }>;
+    warnings?: Array<{ message?: string; [k: string]: unknown }>;
+  };
 }
 
 /* ── Vision-QA report (from hf-adversarial-review.py via /api/.../review) ── */
@@ -1420,9 +1431,20 @@ function CheckModal({
   error: string | null;
   onClose: () => void;
 }) {
-  const findings = report?.findings ?? [];
-  const errors = report?.errorCount ?? 0;
-  const clean = (report?.ok ?? false) || errors === 0;
+  const lint = report?.lint;
+  const validate = report?.validate;
+  const lintFindings = lint?.findings ?? [];
+  const lintErrors = lint?.errorCount ?? 0;
+  const valErrors = validate?.errorCount ?? 0;
+  const clean = report?.ok ?? false;
+  const sectionLabel = {
+    fontSize: "0.7rem",
+    fontWeight: 900,
+    textTransform: "uppercase",
+    color: COLORS.textMuted,
+    margin: "12px 0 6px",
+    letterSpacing: "0.03em",
+  } as const;
 
   return (
     <div style={inspectOverlayStyle}>
@@ -1435,10 +1457,10 @@ function CheckModal({
             </div>
             <div>
               <div style={{ fontSize: "1.05rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.03em", lineHeight: 1 }}>
-                Composition Lint
+                Composition Check
               </div>
               <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "2px" }}>
-                Structure · Determinism gate (D5)
+                Structure · Determinism · Runtime gate (D5)
               </div>
             </div>
           </div>
@@ -1455,32 +1477,50 @@ function CheckModal({
             </div>
           )}
 
-          {!error && clean && (
-            <div style={inspectCleanStyle}>
-              <Check size={40} strokeWidth={3} />
-              <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1rem", marginTop: "10px" }}>
-                No lint errors
-              </div>
-              <div style={{ fontSize: "0.8rem", fontWeight: 600, color: COLORS.textMuted, marginTop: "4px" }}>
-                {report?.warningCount
-                  ? `${report.warningCount} warning(s) · ${report?.infoCount ?? 0} info — advisory only.`
-                  : "Composition passed the structural gate."}
-              </div>
-            </div>
-          )}
-
-          {!error && !clean && (
+          {!error && (
             <>
+              {/* Overall verdict */}
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+                <span style={{ fontSize: "1.3rem", lineHeight: 1, color: clean ? "#1d8a3a" : "#b00020" }}>
+                  {clean ? "✓" : "✗"}
+                </span>
+                <span style={{ fontSize: "0.8rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.03em", color: clean ? "#1d8a3a" : "#b00020" }}>
+                  {clean ? "Passed lint + runtime" : "Issues found"}
+                </span>
+              </div>
+
+              {/* Lint section (structure / determinism) */}
+              <div style={sectionLabel}>Structure · Determinism (lint)</div>
               <div style={inspectSummaryStyle}>
-                <CountPill label="Errors" value={errors} tone="error" />
-                <CountPill label="Warnings" value={report?.warningCount ?? 0} tone="warn" />
-                <CountPill label="Info" value={report?.infoCount ?? 0} tone="info" />
+                <CountPill label="Errors" value={lintErrors} tone="error" />
+                <CountPill label="Warnings" value={lint?.warningCount ?? 0} tone="warn" />
+                <CountPill label="Info" value={lint?.infoCount ?? 0} tone="info" />
               </div>
-              <div style={inspectListStyle}>
-                {findings.map((f, i) => (
-                  <CheckFindingRow key={i} finding={f} />
-                ))}
+              {lintFindings.length > 0 && (
+                <div style={inspectListStyle}>
+                  {lintFindings.slice(0, 12).map((f, i) => (
+                    <CheckFindingRow key={i} finding={f} />
+                  ))}
+                </div>
+              )}
+
+              {/* Validate section (runtime / contrast) */}
+              <div style={sectionLabel}>
+                Runtime · Contrast (validate) — {validate?.ok ? "renders ✓" : "renders ✗"}
               </div>
+              <div style={inspectSummaryStyle}>
+                <CountPill label="JS/asset errors" value={valErrors} tone="error" />
+                <CountPill label="Contrast failures" value={validate?.contrastFailures ?? 0} tone="warn" />
+              </div>
+              {validate?.errors && validate.errors.length > 0 && (
+                <div style={inspectListStyle}>
+                  {validate.errors.slice(0, 8).map((e, i) => (
+                    <div key={i} style={{ padding: "6px 8px", borderBottom: "1px solid rgba(0,0,0,0.08)", fontSize: "0.78rem", color: COLORS.text }}>
+                      <strong style={{ color: "#b00020" }}>error:</strong> {e?.message ? String(e.message) : JSON.stringify(e)}
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -1488,7 +1528,7 @@ function CheckModal({
         {/* Footer */}
         <div style={footerStyle}>
           <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
-            Powered by hyperframes lint
+            Powered by hyperframes lint + validate
           </div>
           <button type="button" onClick={onClose} style={inspectCloseBtnStyle}>
             <X size={16} /> Close

@@ -181,18 +181,31 @@ export async function getRenderStatus(jobId: string): Promise<RenderStatus> {
   return parsed as RenderStatus;
 }
 
-/** Lint report shape from `hyperframes lint --json` (flat — no nested wrapper). */
+/** Pre-render gate report (D5 steps 1+2): structural lint + runtime validate. */
+export interface CheckFinding {
+  severity?: string; // "error" | "warning" | "info"
+  code?: string;
+  message?: string;
+  selector?: string;
+}
+
 export interface CheckReport {
-  ok: boolean;
-  errorCount: number;
-  warningCount: number;
-  infoCount: number;
-  findings: Array<{
-    severity: string; // "error" | "warning" | "info"
-    code: string;
-    message?: string;
-    selector?: string;
-  }>;
+  ok: boolean; // lint.ok && validate.ok
+  lint?: {
+    ok: boolean;
+    errorCount: number;
+    warningCount: number;
+    infoCount?: number;
+    findings?: CheckFinding[];
+  };
+  validate?: {
+    ok: boolean; // renders without error
+    errorCount: number;
+    warningCount: number;
+    contrastFailures: number;
+    errors?: unknown[];
+    warnings?: unknown[];
+  };
 }
 
 /**
