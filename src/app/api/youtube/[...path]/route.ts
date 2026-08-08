@@ -14,14 +14,21 @@ import { NextRequest, NextResponse } from "next/server";
  *   POST /api/youtube/videos/{id}/comments   ->  POST /videos/{id}/comments
  *   GET  /api/youtube/videos/{id}/file       ->  GET  /videos/{id}/file  (streamed)
  *
- * Auth: consistent with the rest of HyperFrames' /api/* routes, the /admin page
- * gates access client-side (sessionStorage) and this gateway trusts that gate
- * (ADR-005 — the Python service trusts the Next.js layer). Tighten here if a
- * server-side admin session is introduced for the wider app.
+ * Auth (ADR-005): HyperFrames authenticates admins via an httpOnly `ha-auth`
+ * cookie issued by /api/auth after the password check. This gateway enforces
+ * that cookie server-side before proxying, so only authenticated admin sessions
+ * can reach the internal Python service (the Python service itself trusts the
+ * Next.js layer and binds to 127.0.0.1).
  */
 
 const PYTHON_API_BASE =
   process.env.YOUTUBE_API_URL || "http://127.0.0.1:3001";
+
+// HyperFrames' existing admin auth: an httpOnly `ha-auth=ok` cookie issued by
+// /api/auth after the admin password check (src/app/api/auth/route.ts). The
+// gateway must enforce it server-side (ADR-005) so only authenticated admin
+// sessions can proxy through to the internal Python service.
+const ADMIN_COOKIE = "ha-auth";
 
 // Never forward these to the Python service.
 const STRIP_REQ_HEADERS = new Set([
@@ -34,10 +41,25 @@ const STRIP_RES_HEADERS = new Set([
   "connection", "keep-alive",
 ]);
 
+function unauthorized(): NextResponse {
+  return NextResponse.json(
+    {
+      code: 401,
+      message: "Not authenticated. Sign in to the HyperFrames admin first.",
+    },
+    { status: 401 },
+  );
+}
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 async function forward(req: NextRequest, segments: string[]) {
+  // ADR-005: authenticate every proxied request via the admin cookie before
+  // reaching the internal Python service. OPTIONS preflight is handled
+  // separately (see below) and stays open.
+  if (req.cookies.get(ADMIN_COOKIE)?.value !== "ok") return unauthorized();
+
   const path = segments.map(encodeURIComponent).join("/");
   const search = req.nextUrl.search || ""; // preserve ?limit= / ?status=
   const upstream = new URL(`${PYTHON_API_BASE}/${path}${search}`);

@@ -10,8 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
  * (hard 6px shadows, 4px ink borders, cream/ink/sun palette, uppercase weight-900).
  */
 
-// --- Auth (matches the existing /admin page's client-side gate) ---------------
-const ADMIN_PASSWORD = "spacecubed";
+// --- Auth (shared HyperFrames admin gate; see /api/auth, ADR-005) -------------
 const SESSION_KEY = "hyperaspect_admin_auth";
 
 const API = (p: string) => "/api/youtube/" + p.replace(/^\//, "");
@@ -166,18 +165,31 @@ export default function YoutubePipelinePage() {
     }
   }, [activeJob?.status, fetchVideos]);
 
-  function handleLogin(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    if (pw === ADMIN_PASSWORD) {
-      try {
-        sessionStorage.setItem(SESSION_KEY, "1");
-      } catch {}
-      setAuthed(true);
-      setPwError(false);
-      setPw("");
-    } else {
+    // Authenticate through HyperFrames' shared /api/auth route so the httpOnly
+    // `ha-auth` cookie is issued — the /api/youtube/* gateway requires it
+    // server-side (ADR-005). Keeps a sessionStorage flag for the client gate.
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (!res.ok) {
+        setPwError(true);
+        return;
+      }
+    } catch {
       setPwError(true);
+      return;
     }
+    try {
+      sessionStorage.setItem(SESSION_KEY, "1");
+    } catch {}
+    setAuthed(true);
+    setPwError(false);
+    setPw("");
   }
 
   async function handleProcess() {
