@@ -32,23 +32,28 @@ export async function POST(
   }
 
   // Body is optional — a bare POST renders with the saved slot values.
-  let body: { variables?: Record<string, unknown>; webhookUrl?: string } | null = null;
+  let body: { variables?: Record<string, unknown>; webhookUrl?: string; raw?: boolean } | null = null;
   try {
     body = await req.json();
   } catch {
     // empty/non-JSON body → fall through to defaults below
   }
 
-  const variables =
-    body?.variables ?? (template.slotValues && Object.keys(template.slotValues).length > 0
-      ? (template.slotValues as Record<string, string | number>)
-      : undefined);
+  const raw = body?.raw === true;
+  // Raw mode (brick 15): the staged composition was patched in place — render it
+  // as-is, no recompose, no variable forwarding.
+  const variables = raw
+    ? undefined
+    : body?.variables ?? (template.slotValues && Object.keys(template.slotValues).length > 0
+        ? (template.slotValues as Record<string, string | number>)
+        : undefined);
   const webhookUrl = body?.webhookUrl;
 
   try {
     const job = await enqueueRender(id, {
       ...(variables ? { variables } : {}),
       ...(webhookUrl ? { webhookUrl } : {}),
+      ...(raw ? { raw: true } : {}),
     });
     return NextResponse.json(job, { status: 202 });
   } catch (e) {

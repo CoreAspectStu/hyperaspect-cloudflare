@@ -233,11 +233,18 @@ interface ProposalChange {
   to: string | number;
   reason: string;
 }
-interface ProposalResult {
-  changes: ProposalChange[];
-  rejected: Array<{ slotId: string; reason: string }>;
-  summary: string;
+/** One structural diff entry (brick 15): a patched attribute/text on a scene/track. */
+interface StructDiff {
+  op: string;
+  target: string;
+  attr: string;
+  from: string;
+  to: string;
 }
+/** Discriminated proposal payload: slot tier (brick 14) or structure tier (brick 15). */
+type ProposePayload =
+  | { mode: "slot"; changes: ProposalChange[]; rejected: Array<{ slotId: string; reason: string }>; summary: string }
+  | { mode: "structure"; edits: unknown[]; diff: StructDiff[]; rejected: string[]; summary: string };
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Static config / option lists
@@ -484,8 +491,9 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
 
   /* ── LLM-proposal state (D4: the gate's caller) ── */
   const [proposePrompt, setProposePrompt] = useState("");
+  const [proposeMode, setProposeMode] = useState<"slot" | "structure">("slot");
   const [isProposing, setIsProposing] = useState(false);
-  const [proposal, setProposal] = useState<ProposalResult | null>(null);
+  const [proposal, setProposal] = useState<ProposePayload | null>(null);
   const [proposeError, setProposeError] = useState<string | null>(null);
 
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
@@ -779,9 +787,10 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   /* ══ Gate orchestration (D5): chain check → render → review → awaiting-approve ══ */
   const cancelGate = useCallback(() => setGate({ phase: "idle" }), []);
 
-  const handleRunGate = useCallback(async () => {
+  const handleRunGate = useCallback(async (opts?: { raw?: boolean }) => {
     const id = templateId ?? jobId;
     if (!id || gate.phase !== "idle") return;
+    const raw = opts?.raw === true; // brick 15: render a structurally-staged composition as-is
     const PENDING: GateSteps = { check: "pending", render: "pending", review: "pending", approve: "pending" };
     const failGate = (step: "check" | "render" | "review", error: string) =>
       setGate({ phase: "failed", steps: { ...PENDING, [step]: "fail" }, error });
@@ -811,7 +820,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
       const rr = await fetch(`/api/studio/template/${esc(id)}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify(raw ? { raw: true } : {}),
       });
       const rj = (await rr.json()) as { jobId?: string; error?: string };
       if (!rr.ok || !rj.jobId) throw new Error(rj.error || `Render HTTP ${rr.status}`);
@@ -885,40 +894,78 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     setProposeError(null);
     setProposal(null);
     try {
-      const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/propose`, {
+      const route = proposeMode === "structure" ? "propose-structural" : "propose";
+      const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/${route}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: proposePrompt.trim() }),
       });
-      const data = (await res.json().catch(() => ({}))) as ProposalResult & { error?: string };
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown> & {
+        error?: string;
+      };
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setProposal(data);
+      setProposal(
+        proposeMode === "structure"
+          ? {
+              mode: "structure",
+              edits: (data.edits as unknown[]) ?? [],
+              diff: (data.diff as StructDiff[]) ?? [],
+              rejected: (data.rejected as string[]) ?? [],
+              summary: (data.summary as string) ?? "",
+            }
+          : {
+              mode: "slot",
+              changes: (data.changes as ProposalChange[]) ?? [],
+              rejected: (data.rejected as Array<{ slotId: string; reason: string }>) ?? [],
+              summary: (data.summary as string) ?? "",
+            },
+      );
     } catch (e) {
       setProposeError(e instanceof Error ? e.message : "Proposal failed.");
     } finally {
       setIsProposing(false);
     }
-  }, [templateId, jobId, isProposing, proposePrompt]);
+  }, [templateId, jobId, isProposing, proposePrompt, proposeMode]);
 
-  // Accept the diff: apply locally, persist (deterministic save), then run the
-  // verification gate — an LLM-proposed change is non-deterministic, so it must
-  // pass lint → render → review → approve before it counts (D4/D5).
+  // Accept the diff: apply + persist, then run the verification gate — an LLM-proposed
+  // change is non-deterministic, so it must pass lint → render → review → approve (D4/D5).
   const handleAcceptProposal = useCallback(async () => {
-    if (!proposal || !proposal.changes.length || !manifest?.slotValues) return;
+    if (!proposal) return;
     const id = templateId ?? jobId;
+    setProposal(null);
+    setProposePrompt("");
+    setProposeError(null);
+
+    // Structure tier (brick 15): project + persist + stage the patched composition,
+    // then run the gate RAW (render the staged patch as-is — no recompose).
+    if (proposal.mode === "structure") {
+      if (!proposal.edits.length || !id) return;
+      try {
+        const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/apply-structural`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ edits: proposal.edits }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      } catch (e) {
+        setProposeError(e instanceof Error ? e.message : "Apply failed.");
+        return;
+      }
+      handleRunGate({ raw: true });
+      return;
+    }
+
+    // Slot tier (brick 14): apply locally + persist + run the gate.
+    if (!proposal.changes.length || !manifest?.slotValues) return;
     const changes = proposal.changes;
-    // 1. Apply to local editor state so the Slots tab reflects the new values.
     setManifest((prev) => {
       if (!prev || !prev.slotValues) return prev;
       const slotValues = { ...prev.slotValues };
       for (const c of changes) slotValues[c.slotId] = c.to;
       return { ...prev, slotValues };
     });
-    setProposal(null);
-    setProposePrompt("");
-    setProposeError(null);
     if (!id) return;
-    // 2. Persist (must land before the gate's render reads the saved slotValues).
     const vals: Record<string, string | number> = {};
     for (const c of changes) vals[c.slotId] = c.to;
     try {
@@ -930,7 +977,6 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     } catch {
       /* best-effort; the gate still runs */
     }
-    // 3. Run the verification gate — this is the gate's real caller.
     handleRunGate();
   }, [proposal, manifest, templateId, jobId, handleRunGate]);
 
@@ -1268,8 +1314,32 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </div>
               )}
               <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                {/* Ask AI — LLM-proposed slot edits (D4: the gate's caller) */}
+                {/* Ask AI — LLM-proposed edits (D4: the gate's caller). Slot tier
+                    (brick 14) + Structure tier (brick 15). */}
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "1 1 100%", minWidth: 280, marginBottom: "2px" }}>
+                  <div style={{ display: "inline-flex", border: BORDER_SM, backgroundColor: COLORS.bg }}>
+                    {(["slot", "structure"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setProposeMode(m)}
+                        style={{
+                          padding: "9px 10px",
+                          border: "none",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          fontSize: "0.65rem",
+                          fontWeight: 900,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.04em",
+                          backgroundColor: proposeMode === m ? COLORS.text : "transparent",
+                          color: proposeMode === m ? COLORS.bg : COLORS.textMuted,
+                        }}
+                      >
+                        {m === "slot" ? "Slots" : "Structure"}
+                      </button>
+                    ))}
+                  </div>
                   <input
                     value={proposePrompt}
                     onChange={(e) => setProposePrompt(e.target.value)}
@@ -1279,7 +1349,11 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                         void handlePropose();
                       }
                     }}
-                    placeholder="Ask AI to edit — e.g. “deal status to AVAILABLE, warmer accent colour”"
+                    placeholder={
+                      proposeMode === "structure"
+                        ? "Ask AI to restructure — e.g. “shorten scene 3 to 5s”, “swap the drone shot”"
+                        : "Ask AI to edit slots — e.g. “deal status to AVAILABLE, warmer accent colour”"
+                    }
                     disabled={isProposing}
                     style={{ ...inputStyle, flex: 1, fontWeight: 500, textTransform: "none" }}
                   />
@@ -1293,7 +1367,11 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                       opacity: isProposing || !proposePrompt.trim() ? 0.7 : 1,
                       cursor: isProposing || !proposePrompt.trim() ? "not-allowed" : "pointer",
                     }}
-                    title="Ask the AI to propose slot edits — you review the diff before it applies"
+                    title={
+                      proposeMode === "structure"
+                        ? "Ask the AI to propose structural edits (durations/assets/copy) — you review the diff before it applies"
+                        : "Ask the AI to propose slot edits — you review the diff before it applies"
+                    }
                   >
                     {isProposing ? (
                       <>
@@ -1406,7 +1484,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </button>
                 <button
                   type="button"
-                  onClick={handleRunGate}
+                  onClick={() => handleRunGate()}
                   disabled={gate.phase !== "idle" || renderBusy || isReviewing}
                   style={{
                     ...renderBtnStyle,
@@ -1711,14 +1789,19 @@ function ProposeModal({
   onAccept,
   onReject,
 }: {
-  proposal: ProposalResult | null;
+  proposal: ProposePayload | null;
   error: string | null;
   onAccept: () => void;
   onReject: () => void;
 }) {
-  const changes = proposal?.changes ?? [];
-  const rejected = proposal?.rejected ?? [];
-  const empty = changes.length === 0;
+  const isStruct = proposal?.mode === "structure";
+  const slotChanges = !isStruct ? proposal?.changes ?? [] : [];
+  const structDiff = isStruct ? proposal?.diff ?? [] : [];
+  const changeCount = isStruct ? structDiff.length : slotChanges.length;
+  const empty = changeCount === 0;
+  const slotRejected = !isStruct ? proposal?.rejected ?? [] : [];
+  const structRejected = isStruct ? proposal?.rejected ?? [] : [];
+  const rejectedCount = isStruct ? structRejected.length : slotRejected.length;
 
   return (
     <div style={inspectOverlayStyle}>
@@ -1731,7 +1814,7 @@ function ProposeModal({
             </div>
             <div>
               <div style={{ fontSize: "1.05rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.03em", lineHeight: 1 }}>
-                AI Edit Proposal
+                {isStruct ? "AI Structural Proposal" : "AI Edit Proposal"}
               </div>
               <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: "2px" }}>
                 Review the diff · nothing applies until you accept
@@ -1761,29 +1844,37 @@ function ProposeModal({
             <div style={inspectCleanStyle}>
               <Bot size={40} strokeWidth={2.5} />
               <div style={{ fontWeight: 900, textTransform: "uppercase", fontSize: "1rem", marginTop: "10px" }}>
-                No slot edits proposed
+                {isStruct ? "No structural edits proposed" : "No slot edits proposed"}
               </div>
               <div style={{ fontSize: "0.8rem", fontWeight: 600, color: COLORS.textMuted, marginTop: "4px" }}>
-                The request needs structural changes the AI can&apos;t make via slots alone.
+                {isStruct
+                  ? "The request needs slot edits or new/removed scenes the AI can\x27t make in-place."
+                  : "The request needs structural changes the AI can\x27t make via slots alone."}
               </div>
             </div>
           )}
 
           {!error && !empty && (
             <div style={inspectListStyle}>
-              {changes.map((c) => (
-                <ProposalChangeRow key={c.slotId} change={c} />
-              ))}
-              {rejected.length > 0 && (
+              {isStruct
+                ? structDiff.map((d, i) => <ProposalStructRow key={i} diff={d} />)
+                : slotChanges.map((c) => <ProposalChangeRow key={c.slotId} change={c} />)}
+              {rejectedCount > 0 && (
                 <div style={{ borderTop: `2px dashed ${COLORS.textMuted}`, marginTop: "8px", paddingTop: "8px" }}>
                   <div style={{ fontSize: "0.65rem", fontWeight: 800, color: COLORS.danger, textTransform: "uppercase", marginBottom: "4px" }}>
-                    Rejected by schema ({rejected.length})
+                    Rejected by schema ({rejectedCount})
                   </div>
-                  {rejected.map((r, i) => (
-                    <div key={i} style={{ fontSize: "0.72rem", fontWeight: 600, color: COLORS.textMuted, padding: "2px 0" }}>
-                      {r.slotId}: {r.reason}
-                    </div>
-                  ))}
+                  {isStruct
+                    ? structRejected.map((r, i) => (
+                        <div key={i} style={{ fontSize: "0.72rem", fontWeight: 600, color: COLORS.textMuted, padding: "2px 0" }}>
+                          {r}
+                        </div>
+                      ))
+                    : slotRejected.map((r, i) => (
+                        <div key={i} style={{ fontSize: "0.72rem", fontWeight: 600, color: COLORS.textMuted, padding: "2px 0" }}>
+                          {r.slotId}: {r.reason}
+                        </div>
+                      ))}
                 </div>
               )}
             </div>
@@ -1794,7 +1885,7 @@ function ProposeModal({
         <div style={footerStyle}>
           {!empty && (
             <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
-              {changes.length} change{changes.length === 1 ? "" : "s"} · accept runs the gate
+              {changeCount} change{changeCount === 1 ? "" : "s"} · accept runs the gate
             </div>
           )}
           <div style={{ display: "flex", gap: "10px", marginLeft: "auto" }}>
@@ -1816,6 +1907,26 @@ function ProposeModal({
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** One structural-edit diff row (brick 15): op · target · attr · from → to. */
+function ProposalStructRow({ diff }: { diff: StructDiff }) {
+  return (
+    <div style={{ padding: "8px 10px", border: BORDER_SM, backgroundColor: COLORS.bg, marginBottom: "6px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <span style={{ fontSize: "0.6rem", fontWeight: 800, color: COLORS.textMuted, textTransform: "uppercase", border: `2px solid ${COLORS.textMuted}`, padding: "1px 6px" }}>
+          {diff.op}
+        </span>
+        <span style={{ fontSize: "0.8rem", fontWeight: 800 }}>{diff.target}</span>
+        <span style={{ fontSize: "0.7rem", fontFamily: "monospace", color: COLORS.textMuted }}>{diff.attr}</span>
+        <span style={{ fontSize: "0.8rem", fontFamily: "monospace", color: COLORS.textMuted }}>{diff.from || "∅"}</span>
+        <ArrowRight size={14} style={{ color: COLORS.accent }} />
+        <span style={{ fontSize: "0.85rem", fontFamily: "monospace", fontWeight: 800, color: COLORS.text }}>
+          {diff.to}
+        </span>
       </div>
     </div>
   );

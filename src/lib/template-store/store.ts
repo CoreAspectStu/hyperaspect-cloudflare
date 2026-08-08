@@ -22,6 +22,11 @@ export interface TemplateStore {
    * `values.json` overlay until the Video model lands.
    */
   saveValues(id: string, values: Record<string, string | number>): Promise<void>;
+  /**
+   * Persist a structural composition edit (D3/D4) — overwrite the composition
+   * HTML at its compositionPath. Used by the projection's apply path (brick 15).
+   */
+  saveComposition(id: string, html: string): Promise<void>;
 }
 
 /** Object prefix: `templates/{id}/template.json`, `templates/{id}/{compositionPath}`. */
@@ -152,6 +157,17 @@ export class FsTemplateStore implements TemplateStore {
   async saveValues(id: string, values: Record<string, string | number>): Promise<void> {
     await writeFile(join(this.dir, id, "values.json"), JSON.stringify(values, null, 2), "utf8");
   }
+
+  async saveComposition(id: string, html: string): Promise<void> {
+    let rel = "index.html";
+    try {
+      const raw = await readFile(join(this.dir, id, "template.json"), "utf8");
+      rel = (JSON.parse(raw) as Partial<Template>).compositionPath ?? "index.html";
+    } catch {
+      // no template.json — default index.html
+    }
+    await writeFile(join(this.dir, id, rel), html, "utf8");
+  }
 }
 
 // --- R2 (prod) adapter --------------------------------------------------------
@@ -216,6 +232,11 @@ export class R2TemplateStore implements TemplateStore {
 
   async saveValues(id: string, values: Record<string, string | number>): Promise<void> {
     await this.bucket.put(`${R2_PREFIX}${id}/values.json`, JSON.stringify(values, null, 2));
+  }
+
+  async saveComposition(id: string, html: string): Promise<void> {
+    const rel = await this.compositionPath(id);
+    await this.bucket.put(`${R2_PREFIX}${id}/${rel}`, html);
   }
 }
 

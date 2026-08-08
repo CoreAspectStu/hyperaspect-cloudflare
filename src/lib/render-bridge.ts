@@ -82,11 +82,18 @@ export interface RenderStatus extends RenderJob {
  */
 export async function enqueueRender(
   videoName: string,
-  opts?: { variables?: Record<string, unknown>; webhookUrl?: string },
+  opts?: { variables?: Record<string, unknown>; webhookUrl?: string; raw?: boolean },
 ): Promise<RenderJob> {
   const body: Record<string, unknown> = {};
   if (opts?.variables) body.variables = opts.variables;
   if (opts?.webhookUrl) body.webhookUrl = opts.webhookUrl;
+
+  // Raw mode (brick 15 structural edits): the staged composition was patched in
+  // place via stageComposition() — render it AS-IS (no recompose, which would
+  // overwrite the patch from the un-patched _templates). Skips variables too.
+  if (opts?.raw) {
+    return await directEnqueue(videoName, body);
+  }
 
   try {
     return await rerenderAndEnqueue(videoName, body);
@@ -96,6 +103,23 @@ export async function enqueueRender(
       return await directEnqueue(videoName, body);
     }
     throw e;
+  }
+}
+
+/**
+ * POST /video-stage/:id { html } — stage a patched composition (brick 15 structural
+ * edits). The relay writes the HTML to videos/<id>/index.html (backing up the prior
+ * one), so the next render renders the patched composition. The app owns the
+ * projection (project.ts); the relay just writes the file. Throws RelayError(502)
+ * if the relay is unreachable, RelayError(4xx/5xx) on a relay refusal.
+ */
+export async function stageComposition(videoName: string, html: string): Promise<void> {
+  const { resp, parsed } = await postJson(
+    `/video-stage/${encodeURIComponent(videoName)}`,
+    { html },
+  );
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} staging ${videoName}`, parsed);
   }
 }
 
