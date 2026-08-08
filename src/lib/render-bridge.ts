@@ -269,6 +269,55 @@ export async function getReviewReport(
   return { ready: true, report: parsed as ReviewReport };
 }
 
+/** Human sign-off state for a render (D5 step 4). `current` = the approval is for
+ * the latest mp4 (else a newer render is pending re-approval). */
+export interface ApprovalState {
+  status: "approved" | "rejected" | "pending";
+  mp4?: string | null;
+  score?: number | null;
+  at?: string | null;
+  current: boolean;
+}
+
+/** GET /video-approve/:id — read the producer's sign-off for the latest render. */
+export async function getApproval(videoName: string): Promise<ApprovalState> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-approve/${encodeURIComponent(videoName)}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for approval ${videoName}`, parsed);
+  }
+  return parsed as ApprovalState;
+}
+
+/** POST /video-approve/:id — record the producer's sign-off (approved/rejected). */
+export async function setApproval(
+  videoName: string,
+  decision: { status: "approved" | "rejected"; mp4: string; score?: number },
+): Promise<ApprovalState> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-approve/${encodeURIComponent(videoName)}`, {
+      method: "POST",
+      headers: { authorization: bearer(), "content-type": "application/json" },
+      body: JSON.stringify(decision),
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for approval ${videoName}`, parsed);
+  }
+  return parsed as ApprovalState;
+}
+
 /** Map a thrown RelayError (or unexpected error) to a NextResponse, passing the
  * upstream status + body through so callers see the real relay verdict (409, 404…). */
 export function relayErrorResponse(e: unknown) {

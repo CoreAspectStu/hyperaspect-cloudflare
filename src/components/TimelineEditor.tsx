@@ -174,6 +174,7 @@ interface CheckReport {
 
 /* ── Vision-QA report (from hf-adversarial-review.py via /api/.../review) ── */
 interface ReviewReport {
+  video?: string; // mp4 path the review scored (basename used for approval keying)
   average_score?: number; // 0-10
   passed?: boolean;
   threshold?: number;
@@ -181,6 +182,15 @@ interface ReviewReport {
   per_frame?: Array<{ score?: number; issues?: string[]; fix_needed?: boolean }>;
   all_issues?: string[];
   fixes?: Array<{ priority?: string; issue?: string; fix?: string }>;
+}
+
+/* ── Human-approve state (D5 step 4) ── */
+interface ApprovalState {
+  status: "approved" | "rejected" | "pending";
+  mp4?: string | null;
+  score?: number | null;
+  at?: string | null;
+  current: boolean; // approval is for the latest render
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -418,6 +428,10 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewReport, setReviewReport] = useState<ReviewReport | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
+
+  /* ── Human-approve gate (D5 step 4) state ── */
+  const [approval, setApproval] = useState<ApprovalState | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
 
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
@@ -674,6 +688,74 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     }
   }, [templateId, jobId, isReviewing]);
 
+  /* ══ Human-approve (D5 step 4) ══ */
+  const handleApprove = useCallback(
+    async (decision: "approved" | "rejected") => {
+      const id = templateId ?? jobId;
+      const mp4 = reviewReport?.video?.split("/").pop();
+      if (!id || !mp4 || isApproving) return;
+      setIsApproving(true);
+      try {
+        const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: decision,
+            mp4,
+            score: typeof reviewReport?.average_score === "number" ? reviewReport.average_score : undefined,
+          }),
+        });
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          throw new Error(`Approve failed (HTTP ${res.status})${txt ? `: ${txt.slice(0, 150)}` : ""}`);
+        }
+        setApproval((await res.json()) as ApprovalState);
+      } catch {
+        /* keep prior approval state on error */
+      } finally {
+        setIsApproving(false);
+      }
+    },
+    [templateId, jobId, reviewReport, isApproving],
+  );
+
+  /* Load the approval state on mount (setState is after await, so it doesn't trip
+   * react-hooks/set-state-in-effect). */
+  useEffect(() => {
+    const id = templateId ?? jobId;
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/approve`);
+        if (!cancelled && res.ok) setApproval((await res.json()) as ApprovalState);
+      } catch {
+        /* approval is advisory in the UI — ignore transient errors */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [templateId, jobId]);
+  /* A render completing means a new cut is pending sign-off — refresh approval. */
+  useEffect(() => {
+    if (renderPhase !== "completed") return;
+    const id = templateId ?? jobId;
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/studio/template/${encodeURIComponent(id)}/approve`);
+        if (!cancelled && res.ok) setApproval((await res.json()) as ApprovalState);
+      } catch {
+        /* advisory */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [renderPhase, templateId, jobId]);
+
   /* ══ Render (render bridge → relay → core-control farm → mp4) ══ */
   const handleRender = useCallback(async () => {
     const id = templateId ?? jobId;
@@ -929,6 +1011,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
 
             {/* ════ FOOTER: render + status ════ */}
             <div style={footerStyle}>
+              {approval && <ApprovalBadge approval={approval} />}
               {(renderPhase === "queued" || renderPhase === "running") && (
                 <div style={successPillStyle}>
                   <Loader2 size={15} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
@@ -1148,6 +1231,9 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
           <ReviewModal
             report={reviewReport}
             error={reviewError}
+            approval={approval}
+            isApproving={isApproving}
+            onApprove={handleApprove}
             onClose={() => {
               setReviewReport(null);
               setReviewError(null);
@@ -1444,10 +1530,16 @@ function CheckFindingRow({ finding }: { finding: CheckFinding }) {
 function ReviewModal({
   report,
   error,
+  approval,
+  isApproving,
+  onApprove,
   onClose,
 }: {
   report: ReviewReport | null;
   error: string | null;
+  approval: ApprovalState | null;
+  isApproving: boolean;
+  onApprove: (decision: "approved" | "rejected") => void;
   onClose: () => void;
 }) {
   const score = report?.average_score ?? 0;
@@ -1579,7 +1671,33 @@ function ReviewModal({
           )}
         </div>
 
-        {/* Footer */}
+        {/* Footer: human-approve (D5 step 4) + close */}
+        {!error && report && (
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
+            {approval?.current && approval.status === "approved" && (
+              <span style={{ fontSize: "0.7rem", fontWeight: 900, color: "#1d8a3a", textTransform: "uppercase" }}>✓ Approved</span>
+            )}
+            <button
+              type="button"
+              onClick={() => onApprove("approved")}
+              disabled={isApproving}
+              style={{ ...inspectCloseBtnStyle, background: "#1d8a3a", color: "#fff", opacity: isApproving ? 0.6 : 1, cursor: isApproving ? "not-allowed" : "pointer" }}
+            >
+              <Check size={16} /> Approve
+            </button>
+            <button
+              type="button"
+              onClick={() => onApprove("rejected")}
+              disabled={isApproving}
+              style={{ ...inspectCloseBtnStyle, background: "#b00020", color: "#fff", opacity: isApproving ? 0.6 : 1, cursor: isApproving ? "not-allowed" : "pointer" }}
+            >
+              <X size={16} /> Reject
+            </button>
+            {approval?.current && approval.status === "rejected" && (
+              <span style={{ fontSize: "0.7rem", fontWeight: 900, color: "#b00020", textTransform: "uppercase" }}>✗ Rejected</span>
+            )}
+          </div>
+        )}
         <div style={footerStyle}>
           <div style={{ fontSize: "0.65rem", fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
             Powered by GLM-4.6V
@@ -1589,6 +1707,43 @@ function ReviewModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Sub-component: ApprovalBadge — current render's human sign-off (D5 step 4)
+ * ════════════════════════════════════════════════════════════════════════════ */
+function ApprovalBadge({ approval }: { approval: ApprovalState }) {
+  const s = approval.status;
+  const st =
+    s === "approved"
+      ? successPillStyle
+      : s === "rejected"
+        ? errorPillStyle
+        : {
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "6px 12px",
+            background: "#e2e8ff",
+            color: "#1d3a8a",
+            borderRadius: "6px",
+            fontSize: "0.7rem",
+            fontWeight: 900,
+            textTransform: "uppercase",
+            letterSpacing: "0.03em",
+          };
+  return (
+    <div style={st}>
+      {s === "approved" ? <Check size={15} /> : s === "rejected" ? <X size={15} /> : <Clock size={15} />}
+      <span style={{ flex: 1 }}>
+        {s === "approved"
+          ? `Approved${approval.score != null ? ` · ${approval.score}/10` : ""}`
+          : s === "rejected"
+            ? "Rejected"
+            : "Pending approval"}
+      </span>
     </div>
   );
 }
