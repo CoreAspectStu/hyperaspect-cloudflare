@@ -37,6 +37,7 @@ import {
   ScanSearch,
   ShieldCheck,
   Sparkles,
+  Wand2,
 } from "lucide-react";
 import type { Slot, Track } from "@/lib/template-store/types";
 
@@ -203,6 +204,23 @@ interface ApprovalState {
   at?: string | null;
   current: boolean; // approval is for the latest render
 }
+
+/* ── Gate orchestration (D5: chain lint→render→vision-QA→approve) ── */
+type GateStepStatus = "pending" | "running" | "pass" | "fail";
+interface GateSteps {
+  check: GateStepStatus;
+  render: GateStepStatus;
+  review: GateStepStatus;
+  approve: "pending" | "approved" | "rejected";
+}
+type Gate =
+  | { phase: "idle" }
+  | {
+      phase: "checking" | "rendering" | "reviewing" | "awaiting" | "failed";
+      progress?: number; // render % during "rendering"
+      steps: GateSteps;
+      error?: string;
+    };
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Static config / option lists
@@ -443,6 +461,9 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   /* ── Human-approve gate (D5 step 4) state ── */
   const [approval, setApproval] = useState<ApprovalState | null>(null);
   const [isApproving, setIsApproving] = useState(false);
+
+  /* ── Gate orchestration state (D5) ── */
+  const [gate, setGate] = useState<Gate>({ phase: "idle" });
 
   /* ── Load template on mount (native /api/studio/template/[id]) ── */
   useEffect(() => {
@@ -721,6 +742,8 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
           throw new Error(`Approve failed (HTTP ${res.status})${txt ? `: ${txt.slice(0, 150)}` : ""}`);
         }
         setApproval((await res.json()) as ApprovalState);
+        // If a gate run is awaiting approval, close it (the ApprovalBadge shows the result).
+        setGate((g) => (g.phase === "awaiting" ? { phase: "idle" } : g));
       } catch {
         /* keep prior approval state on error */
       } finally {
@@ -729,6 +752,104 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     },
     [templateId, jobId, reviewReport, isApproving],
   );
+
+  /* ══ Gate orchestration (D5): chain check → render → review → awaiting-approve ══ */
+  const cancelGate = useCallback(() => setGate({ phase: "idle" }), []);
+
+  const handleRunGate = useCallback(async () => {
+    const id = templateId ?? jobId;
+    if (!id || gate.phase !== "idle") return;
+    const PENDING: GateSteps = { check: "pending", render: "pending", review: "pending", approve: "pending" };
+    const failGate = (step: "check" | "render" | "review", error: string) =>
+      setGate({ phase: "failed", steps: { ...PENDING, [step]: "fail" }, error });
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const esc = encodeURIComponent;
+
+    // 1. Check (lint + runtime validate)
+    setGate({ phase: "checking", steps: { ...PENDING, check: "running" } });
+    try {
+      const cr = await fetch(`/api/studio/template/${esc(id)}/check`);
+      if (!cr.ok) throw new Error(`Check HTTP ${cr.status}`);
+      const check: CheckReport = await cr.json();
+      if (!check.ok) {
+        setCheckReport(check);
+        setGate({ phase: "failed", steps: { ...PENDING, check: "fail" }, error: "Lint or runtime errors" });
+        return;
+      }
+    } catch (e) {
+      failGate("check", e instanceof Error ? e.message : "check failed");
+      return;
+    }
+
+    // 2. Render (POST → poll to completed)
+    setGate({ phase: "rendering", steps: { ...PENDING, check: "pass", render: "running" }, progress: 0 });
+    let renderJobId: string | null = null;
+    try {
+      const rr = await fetch(`/api/studio/template/${esc(id)}/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const rj = (await rr.json()) as { jobId?: string; error?: string };
+      if (!rr.ok || !rj.jobId) throw new Error(rj.error || `Render HTTP ${rr.status}`);
+      renderJobId = rj.jobId;
+    } catch (e) {
+      failGate("render", e instanceof Error ? e.message : "render enqueue failed");
+      return;
+    }
+    let rendered = false;
+    for (let i = 0; i < 120; i++) {
+      await sleep(5000);
+      try {
+        const s = await fetch(`/api/studio/template/${esc(id)}/render/${esc(renderJobId)}`);
+        const sj = (await s.json()) as { status?: string; progress?: number; output?: string | null; error?: string };
+        if (sj.status === "completed") {
+          setRenderOutput(sj.output ?? null);
+          rendered = true;
+          break;
+        }
+        if (sj.status === "failed") throw new Error(sj.error || "render failed");
+        if (typeof sj.progress === "number") {
+          setGate((g) => (g.phase === "rendering" ? { ...g, progress: sj.progress } : g));
+        }
+      } catch (e) {
+        failGate("render", e instanceof Error ? e.message : "render failed");
+        return;
+      }
+    }
+    if (!rendered) {
+      failGate("render", "render timed out");
+      return;
+    }
+
+    // 3. Review (poll 202 → 200)
+    setGate({ phase: "reviewing", steps: { ...PENDING, check: "pass", render: "pass", review: "running" } });
+    let reviewed = false;
+    try {
+      // Cold GLM reviews (after a fresh render invalidates the cache) can take
+      // several minutes; poll patiently (90 × 8s ≈ 12min).
+      for (let i = 0; i < 90; i++) {
+        const rv = await fetch(`/api/studio/template/${esc(id)}/review`);
+        if (rv.status === 200) {
+          setReviewReport((await rv.json()) as ReviewReport);
+          reviewed = true;
+          break;
+        }
+        if (rv.status !== 202) throw new Error(`Review HTTP ${rv.status}`);
+        await sleep(8000);
+      }
+    } catch (e) {
+      failGate("review", e instanceof Error ? e.message : "review failed");
+      return;
+    }
+    if (!reviewed) {
+      failGate("review", "review timed out");
+      return;
+    }
+
+    // 4. Awaiting human approval — the ReviewModal (with Approve/Reject) opens via reviewReport.
+    setGate({ phase: "awaiting", steps: { ...PENDING, check: "pass", render: "pass", review: "pass" } });
+  }, [templateId, jobId, gate.phase]);
 
   /* Load the approval state on mount (setState is after await, so it doesn't trip
    * react-hooks/set-state-in-effect). */
@@ -1023,6 +1144,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             {/* ════ FOOTER: render + status ════ */}
             <div style={footerStyle}>
               {approval && <ApprovalBadge approval={approval} />}
+              {gate.phase !== "idle" && <GatePanel gate={gate} onDismiss={cancelGate} />}
               {(renderPhase === "queued" || renderPhase === "running") && (
                 <div style={successPillStyle}>
                   <Loader2 size={15} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
@@ -1157,6 +1279,30 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                   ) : (
                     <>
                       <RefreshCw size={18} /> Render Video
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRunGate}
+                  disabled={gate.phase !== "idle" || renderBusy || isReviewing}
+                  style={{
+                    ...renderBtnStyle,
+                    background: gate.phase === "idle" ? renderBtnStyle.background : "#1d3a8a",
+                    color: "#fff",
+                    opacity: gate.phase !== "idle" || renderBusy || isReviewing ? 0.7 : 1,
+                    cursor: gate.phase !== "idle" || renderBusy || isReviewing ? "not-allowed" : "pointer",
+                  }}
+                  title="Run the full verification gate: lint → render → vision-QA → approve"
+                >
+                  {gate.phase !== "idle" ? (
+                    <>
+                      <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
+                      Gate running…
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 size={18} /> Run Gate
                     </>
                   )}
                 </button>
@@ -1748,6 +1894,64 @@ function ReviewModal({
         </div>
       </div>
     </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * Sub-component: GatePanel — live status of the Run Gate sequence (D5)
+ * ════════════════════════════════════════════════════════════════════════════ */
+function GatePanel({ gate, onDismiss }: { gate: Gate; onDismiss: () => void }) {
+  if (gate.phase === "idle") return null;
+  const s = gate.steps;
+  const icon = (st: GateStepStatus | "pending" | "approved" | "rejected") =>
+    st === "pass" ? "✓" : st === "fail" ? "✗" : st === "running" ? "⟳" : st === "approved" ? "✓" : st === "rejected" ? "✗" : "○";
+  const color = (st: GateStepStatus | "pending" | "approved" | "rejected") =>
+    st === "pass" || st === "approved" ? "#1d8a3a" : st === "fail" || st === "rejected" ? "#b00020" : st === "running" ? "#1d3a8a" : "#888";
+  const label =
+    gate.phase === "failed"
+      ? `Gate failed: ${gate.error ?? "error"}`
+      : gate.phase === "awaiting"
+        ? "Awaiting your approval — see the review"
+        : gate.phase === "rendering"
+          ? `Rendering… ${gate.progress ?? 0}%`
+          : gate.phase === "reviewing"
+            ? "Reviewing rendered frames…"
+            : "Checking composition…";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        padding: "6px 12px",
+        background: gate.phase === "failed" ? "#ffe2e2" : gate.phase === "awaiting" ? "#e6f4ea" : "#e2e8ff",
+        color: gate.phase === "failed" ? "#b00020" : gate.phase === "awaiting" ? "#1d8a3a" : "#1d3a8a",
+        borderRadius: "6px",
+        fontSize: "0.72rem",
+        fontWeight: 800,
+        flexWrap: "wrap",
+      }}
+    >
+      <StepIcon c={color(s.check)} ch={icon(s.check)} label="Check" />
+      <StepIcon c={color(s.render)} ch={icon(s.render)} label="Render" />
+      <StepIcon c={color(s.review)} ch={icon(s.review)} label="Review" />
+      <StepIcon c={color(s.approve)} ch={icon(s.approve)} label="Approve" />
+      <span style={{ flex: 1, minWidth: "120px", textTransform: "none", fontWeight: 700 }}>{label}</span>
+      {(gate.phase === "failed" || gate.phase === "awaiting") && (
+        <button type="button" onClick={onDismiss} style={{ ...dismissBtnStyle, fontWeight: 800 }}>
+          Dismiss
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StepIcon({ c, ch, label }: { c: string; ch: string; label: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+      <span style={{ color: c, fontSize: "0.9rem", fontWeight: 900 }}>{ch}</span>
+      <span style={{ opacity: 0.85 }}>{label}</span>
+    </span>
   );
 }
 
