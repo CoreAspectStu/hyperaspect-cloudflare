@@ -8,6 +8,18 @@ import {
   videoPoster,
   youtubeEmbedUrl,
 } from "@/lib/youtube";
+import {
+  costBreakdown,
+  formatCost,
+  logSummary,
+  stageRows,
+  storyboardView,
+  transcriptView,
+  type CostBreakdown,
+  type JobDetail,
+  type StageRow,
+  type StageStatusKey,
+} from "@/lib/youtube-details";
 
 /**
  * /admin/youtube-pipeline — youtube-ai-video integration (PRD §3.1, ADR-006).
@@ -83,6 +95,18 @@ const STATUS_META: Record<string, { bg: string; label: string }> = {
   processing: { bg: C.blue, label: "Processing" },
   complete: { bg: C.green, label: "Done" },
   error: { bg: C.red, label: "Error" },
+};
+
+// Per-pipeline-stage status colours (distinct from the job-level STATUS_META
+// above — the manifest emits completed/partial/skipped/error/running for each
+// individual stage; see lib/youtube-details normalizeStageStatus).
+const STAGE_STATUS_COLOR: Record<StageStatusKey, string> = {
+  completed: C.green,
+  partial: C.orange,
+  skipped: C.gray,
+  error: C.red,
+  running: C.blue,
+  unknown: C.gray,
 };
 
 export default function YoutubePipelinePage() {
@@ -575,7 +599,7 @@ function JobStatusCard({ job, onDismiss }: { job: StatusResp; onDismiss: () => v
 // --- Generated video card (playback + comments + expandable data) -------------
 function VideoCard({ video }: { video: Video }) {
   const [expanded, setExpanded] = useState(false);
-  const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+  const [detail, setDetail] = useState<JobDetail | null>(null);
   const [comment, setComment] = useState("");
   const [visuals, setVisuals] = useState<string>("");
   const [audioSync, setAudioSync] = useState<string>("");
@@ -664,13 +688,13 @@ function VideoCard({ video }: { video: Video }) {
       </div>
 
       <button onClick={loadDetail} style={{ ...btnGhost, fontSize: "12px" }}>{expanded ? "▾" : "▸"} Data & logs</button>
+      {expanded && !detail && (
+        <div style={{ marginTop: "8px", padding: "12px", textAlign: "center", color: C.gray, fontWeight: 800, fontSize: "11px", border: BORDER_SM, background: C.cream }}>Loading detail…</div>
+      )}
       {expanded && detail && (
         <div style={{ marginTop: "8px" }}>
           {video.error && <div style={{ background: C.red, color: C.paper, border: BORDER_SM, padding: "6px 8px", fontSize: "11px", fontWeight: 800, marginBottom: "8px" }}>{video.error}</div>}
-          <DataSection title="Logs" text={typeof detail.logs === "string" ? detail.logs : ""} />
-          <JsonSection title="Manifest" data={detail.manifest} />
-          <JsonSection title="Transcript" data={detail.transcript} />
-          <JsonSection title="Storyboard" data={detail.storyboard} />
+          <DetailSections detail={detail} />
           {Array.isArray((detail as { comments?: unknown[] }).comments) && (
             <div style={{ marginTop: "8px" }}>
               <div style={{ fontSize: "11px", fontWeight: 900, textTransform: "uppercase", marginBottom: "4px" }}>Comments ({(detail as { comments: unknown[] }).comments.length})</div>
@@ -764,17 +788,216 @@ function MetaChip({ label }: { label: string }) {
   return <span style={{ background: C.cream, border: "2px solid #0a0a0a", padding: "2px 7px", fontSize: "10px", fontWeight: 800 }}>{label}</span>;
 }
 
-function DataSection({ title, text }: { title: string; text: string }) {
+// --- E3-S4: collapsible detail sections (FR-8, ADR-006) ---------------------
+// Five individually-collapsible panels for an expanded job: processing logs,
+// transcript, storyboard scenes, API call details, and cost breakdown. Heavy
+// shaping lives in lib/youtube-details (pure + unit-tested); these components
+// only render the derived, render-ready shapes.
+
+function Collapsible({
+  title,
+  emoji,
+  count,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  emoji: string;
+  count?: number | null;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div style={{ marginBottom: "8px" }}>
-      <div style={{ fontSize: "11px", fontWeight: 900, textTransform: "uppercase", marginBottom: "4px" }}>{title}</div>
-      <pre style={{ background: C.cream, border: BORDER_SM, padding: "8px", fontSize: "10px", lineHeight: 1.5, maxHeight: "140px", overflow: "auto", margin: 0, whiteSpace: "pre-wrap" }}>{text || "—"}</pre>
+    <div style={{ border: BORDER_SM, background: C.paper, boxShadow: SHADOW_SM, marginBottom: "8px" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        style={{
+          width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+          gap: "8px", padding: "9px 10px", background: open ? C.cream : C.paper, border: "none",
+          cursor: "pointer", fontWeight: 900, fontSize: "11px", textTransform: "uppercase",
+          letterSpacing: "0.5px", color: C.ink,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
+          <span>{emoji}</span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          {count != null && count > 0 && (
+            <span style={{ background: C.sun, border: "2px solid #0a0a0a", padding: "0 6px", fontSize: "10px", fontWeight: 900 }}>{count}</span>
+          )}
+          <span aria-hidden>{open ? "▾" : "▸"}</span>
+        </span>
+      </button>
+      {open && <div style={{ padding: "10px", borderTop: "2px solid #0a0a0a" }}>{children}</div>}
     </div>
   );
 }
 
-function JsonSection({ title, data }: { title: string; data: unknown }) {
-  return <DataSection title={title} text={data ? JSON.stringify(data, null, 2) : ""} />;
+type SceneView = ReturnType<typeof storyboardView>["scenes"][number];
+
+function DetailSections({ detail }: { detail: JobDetail }) {
+  const logs = typeof detail.logs === "string" ? detail.logs : "";
+  const logInfo = logSummary(logs);
+  const tv = transcriptView(detail.transcript);
+  const sv = storyboardView(detail.storyboard);
+  const stages = stageRows(detail.manifest);
+  const cb = costBreakdown(detail);
+
+  return (
+    <>
+      {/* 1. Full processing logs */}
+      <Collapsible title="Processing Logs" emoji="📋" count={logInfo.lineCount} defaultOpen>
+        {logs ? <pre style={consolePre}>{logs}</pre> : <DetailEmpty label="No logs recorded yet." />}
+      </Collapsible>
+
+      {/* 2. Extracted transcript */}
+      <Collapsible title="Transcript" emoji="💬" count={tv.count}>
+        {tv.count === 0 ? (
+          <DetailEmpty label="No transcript extracted." />
+        ) : (
+          <div>
+            <div style={detailMeta}>
+              Source <b style={{ color: C.ink }}>{tv.source}</b> · {tv.language} · {tv.count} segments
+            </div>
+            <div>
+              {tv.segments.slice(0, 80).map((s, i) => (
+                <div key={i} style={{ display: "flex", gap: "8px", fontSize: "11px", lineHeight: 1.5, marginBottom: "2px" }}>
+                  <code style={timeCode}>{s.time || "·"}</code>
+                  <span>{s.text}</span>
+                </div>
+              ))}
+            </div>
+            {tv.segments.length > 80 && (
+              <div style={{ fontSize: "10px", color: C.gray, fontWeight: 700, marginTop: "4px" }}>
+                Showing first 80 of {tv.segments.length} segments.
+              </div>
+            )}
+            {tv.fullText && (
+              <details style={{ marginTop: "8px" }}>
+                <summary style={{ fontSize: "10px", fontWeight: 900, textTransform: "uppercase", cursor: "pointer", color: C.gray }}>Full text</summary>
+                <pre style={{ ...consolePre, marginTop: "6px" }}>{tv.fullText}</pre>
+              </details>
+            )}
+          </div>
+        )}
+      </Collapsible>
+
+      {/* 3. Storyboard & scenes */}
+      <Collapsible title="Storyboard & Scenes" emoji="🎬" count={sv.count}>
+        {sv.count === 0 ? (
+          <DetailEmpty label="No storyboard generated." />
+        ) : (
+          <div>
+            {sv.title && <div style={{ fontWeight: 900, fontSize: "12px", lineHeight: 1.4, marginBottom: "8px" }}>{sv.title}</div>}
+            {sv.scenes.map((sc) => <SceneCard key={sc.number} scene={sc} />)}
+          </div>
+        )}
+      </Collapsible>
+
+      {/* 4. API call details (per-stage manifest) */}
+      <Collapsible title="API Call Details" emoji="🔌" count={stages.length}>
+        {stages.length === 0 ? (
+          <DetailEmpty label="No stage data in the manifest yet." />
+        ) : (
+          <div>
+            <div style={stageGrid}>
+              <span style={stageColHead}>Stage</span>
+              <span style={stageColHead}>Status</span>
+              <span style={stageColHead}>Time</span>
+              <span style={stageColHead}>Cost</span>
+            </div>
+            {stages.map((r) => <StageRowView key={r.key} row={r} />)}
+          </div>
+        )}
+      </Collapsible>
+
+      {/* 5. Detailed cost breakdown */}
+      <Collapsible title="Cost Breakdown" emoji="💰">
+        <CostView cb={cb} />
+      </Collapsible>
+    </>
+  );
+}
+
+function DetailEmpty({ label }: { label: string }) {
+  return <div style={{ padding: "8px", textAlign: "center", color: C.gray, fontWeight: 700, fontSize: "11px" }}>{label}</div>;
+}
+
+function SceneCard({ scene }: { scene: SceneView }) {
+  return (
+    <div style={{ border: "2px solid #0a0a0a", background: C.cream, padding: "8px", marginBottom: "6px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px", marginBottom: "4px", flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 900, fontSize: "11px" }}>Scene {scene.number || "?"}</span>
+        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+          {scene.timeRange && <MetaChip label={scene.timeRange} />}
+          {scene.duration > 0 && <MetaChip label={`${scene.duration}s`} />}
+          {scene.shotType && <MetaChip label={scene.shotType} />}
+        </div>
+      </div>
+      {scene.description && <div style={{ fontSize: "11px", lineHeight: 1.5, marginBottom: "4px" }}>{scene.description}</div>}
+      {scene.excerpt && <div style={{ fontSize: "10px", color: C.gray, fontStyle: "italic", marginBottom: "4px", lineHeight: 1.4 }}>&ldquo;{scene.excerpt}&rdquo;</div>}
+      {(scene.mood || scene.palette) && (
+        <div style={{ display: "flex", gap: "5px", flexWrap: "wrap", marginBottom: scene.visualPrompt ? "6px" : "0" }}>
+          {scene.mood && <MetaChip label={`mood: ${scene.mood}`} />}
+          {scene.palette && <MetaChip label={`palette: ${scene.palette}`} />}
+        </div>
+      )}
+      {scene.visualPrompt && <pre style={{ ...consolePre, maxHeight: "84px" }}>{scene.visualPrompt}</pre>}
+      {scene.onScreenText && <div style={{ marginTop: "4px", fontSize: "10px", fontWeight: 800 }}>OSD: {scene.onScreenText}</div>}
+    </div>
+  );
+}
+
+function StageRowView({ row }: { row: StageRow }) {
+  const color = STAGE_STATUS_COLOR[row.statusKey] ?? C.gray;
+  return (
+    <div style={stageGrid}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+        <span style={{ background: color, border: "2px solid #0a0a0a", width: "10px", height: "10px", display: "inline-block", flexShrink: 0 }} />
+        <span style={{ fontWeight: 800, fontSize: "11px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.name}</span>
+      </div>
+      <code style={{ fontSize: "9px", fontWeight: 800, background: C.paper, border: "2px solid #0a0a0a", padding: "1px 4px", textAlign: "center" }}>{row.statusLabel}</code>
+      <span style={{ fontSize: "10px", color: C.gray, fontWeight: 700, textAlign: "right" }}>{row.durationLabel}</span>
+      <span style={{ fontSize: "10px", fontWeight: 800, textAlign: "right" }}>{formatCost(row.costUsd)}</span>
+      {row.error && (
+        <div style={{ gridColumn: "1 / -1", fontSize: "10px", color: C.red, fontWeight: 700, marginTop: "1px" }}>⚠ {row.error}</div>
+      )}
+    </div>
+  );
+}
+
+function CostView({ cb }: { cb: CostBreakdown }) {
+  if (cb.totalUsd == null && !cb.hasPerStageCost) {
+    return <DetailEmpty label="No cost data recorded." />;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 10px", background: C.sun, border: BORDER_SM, marginBottom: "8px" }}>
+        <span style={{ fontWeight: 900, fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Total</span>
+        <span style={{ fontWeight: 900, fontSize: "16px" }}>{formatCost(cb.totalUsd)}</span>
+      </div>
+      {cb.hasPerStageCost && (
+        <>
+          <div style={{ fontSize: "10px", fontWeight: 900, textTransform: "uppercase", color: C.gray, letterSpacing: "0.4px", marginBottom: "4px" }}>Per stage</div>
+          {cb.rows.map((r) => (
+            <div key={r.name} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", padding: "3px 0", borderBottom: "2px dashed #c9b9bd" }}>
+              <span style={{ fontWeight: 700 }}>{r.name}</span>
+              <span style={{ fontWeight: 800 }}>{formatCost(r.costUsd)}</span>
+            </div>
+          ))}
+          {cb.sumUsd != null && cb.totalUsd != null && Math.abs(cb.sumUsd - cb.totalUsd) > 0.0001 && (
+            <div style={{ fontSize: "10px", color: C.gray, marginTop: "5px", fontWeight: 700 }}>
+              Stages sum {formatCost(cb.sumUsd)} vs recorded total {formatCost(cb.totalUsd)}.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 // --- Shared inline styles ----------------------------------------------------
@@ -800,6 +1023,30 @@ const inputStyle: React.CSSProperties = {
 const selectStyle: React.CSSProperties = {
   flex: 1, padding: "8px 10px", background: C.paper, border: BORDER_SM,
   color: C.ink, fontSize: "12px", fontWeight: 800, outline: "none", cursor: "pointer",
+};
+// Dark "console" block for raw text output (processing logs, visual prompts,
+// full transcript text) — stands apart from the cream UI as debug output.
+const consolePre: React.CSSProperties = {
+  background: "#1a1a1a", color: "#e8e8e8", border: BORDER_SM, padding: "8px",
+  fontSize: "10px", lineHeight: 1.5, maxHeight: "240px", overflow: "auto", margin: 0,
+  whiteSpace: "pre-wrap", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+};
+const detailMeta: React.CSSProperties = {
+  fontSize: "10px", fontWeight: 800, textTransform: "uppercase", color: C.gray,
+  letterSpacing: "0.4px", marginBottom: "6px",
+};
+const timeCode: React.CSSProperties = {
+  fontSize: "9px", fontWeight: 800, background: C.paper, border: "2px solid #0a0a0a",
+  padding: "1px 5px", minWidth: "46px", textAlign: "center", flexShrink: 0, height: "fit-content",
+};
+// Four-column stage table (Stage | Status | Time | Cost) shared by the header
+// and each row so the columns line up; an error note spans all four via 1/-1.
+const stageGrid: React.CSSProperties = {
+  display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto auto", gap: "8px",
+  alignItems: "center", padding: "5px 0", borderBottom: "2px solid #0a0a0a",
+};
+const stageColHead: React.CSSProperties = {
+  fontSize: "9px", fontWeight: 900, textTransform: "uppercase", color: C.gray, letterSpacing: "0.4px",
 };
 
 function choiceBtn(selected: boolean): React.CSSProperties {
