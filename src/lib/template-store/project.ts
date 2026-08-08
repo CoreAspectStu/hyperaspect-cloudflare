@@ -66,6 +66,13 @@ function fmtNum(n: number): string {
   return Number.isFinite(n) ? String(n) : String(n);
 }
 
+/** Parse a (maybe-undefined) HTML attribute to a finite number, defaulting to 0. */
+function numAttr(v: string | undefined): number {
+  if (v == null || v === "") return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /**
  * Apply structural edits to a composition HTML string. Edits are applied
  * independently; a failing edit is recorded in `errors` and skipped (the rest
@@ -151,6 +158,25 @@ export function applyStructuralEdits(html: string, edits: StructuralEdit[]): Pro
         errors.push(`unknown op: ${(edit as { op?: string }).op ?? "(none)"}`);
     }
   }
+
+  // Maintain a contiguous timeline: after the edits, recalculate each scene's
+  // data-start to be cumulative (sorted by current start) so duration / reorder /
+  // remove edits don't leave gaps or overlaps. No-op when no scene timing changed.
+  const ordered = root
+    .querySelectorAll(".scene.clip")
+    .map((el) => ({
+      el,
+      start: numAttr(el.attributes["data-start"]),
+      dur: numAttr(el.attributes["data-duration"]),
+    }))
+    .sort((a, b) => a.start - b.start);
+  let cum = 0;
+  for (const s of ordered) {
+    s.el.setAttribute("data-start", fmtNum(cum));
+    cum += s.dur;
+  }
+  const rootEl = root.querySelector("#root");
+  if (rootEl) rootEl.setAttribute("data-duration", fmtNum(cum));
 
   return { html: root.toString(), diff, errors };
 }
