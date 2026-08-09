@@ -29,7 +29,9 @@ export type StructuralEdit =
   | { op: "sceneDuration"; sceneId: string; duration: number }
   | { op: "trackRef"; trackId: string; ref: string; sceneId?: string }
   | { op: "trackTiming"; trackId: string; start?: number; duration?: number; sceneId?: string }
-  | { op: "text"; trackId: string; text: string; sceneId?: string };
+  | { op: "text"; trackId: string; text: string; sceneId?: string }
+  | { op: "removeScene"; sceneId: string }
+  | { op: "reorderScene"; sceneId: string; before?: string; after?: string };
 
 export interface StructuralDiff {
   op: string;
@@ -151,6 +153,57 @@ export function applyStructuralEdits(html: string, edits: StructuralEdit[]): Pro
         const from = cur;
         el.set_content(escapeText(edit.text));
         diff.push({ op: edit.op, target: `track ${edit.trackId}`, attr: "text", from, to: edit.text });
+        break;
+      }
+
+      case "removeScene": {
+        const el = findById(root, edit.sceneId);
+        if (!el || !isScene(el)) {
+          errors.push(`removeScene: unknown scene "${edit.sceneId}"`);
+          break;
+        }
+        const dur = numAttr(el.attributes["data-duration"]);
+        el.remove(); // retiming pass closes the gap
+        diff.push({ op: edit.op, target: `scene ${edit.sceneId}`, attr: "removed", from: `${dur}s`, to: "" });
+        break;
+      }
+
+      case "reorderScene": {
+        const el = findById(root, edit.sceneId);
+        if (!el || !isScene(el)) {
+          errors.push(`reorderScene: unknown scene "${edit.sceneId}"`);
+          break;
+        }
+        const anchorId = edit.before ?? edit.after;
+        if (!anchorId) {
+          errors.push(`reorderScene: "${edit.sceneId}" needs before or after`);
+          break;
+        }
+        const anchor = findById(root, anchorId);
+        if (!anchor || !isScene(anchor)) {
+          errors.push(`reorderScene: unknown target scene "${anchorId}"`);
+          break;
+        }
+        const scenes = root
+          .querySelectorAll(".scene.clip")
+          .sort((a, b) => numAttr(a.attributes["data-start"]) - numAttr(b.attributes["data-start"]));
+        const oldIdx = scenes.findIndex((s) => s.id === edit.sceneId);
+        const without = scenes.filter((s) => s.id !== edit.sceneId);
+        const targetIdx = without.findIndex((s) => s.id === anchorId);
+        const insertIdx = edit.after ? targetIdx + 1 : targetIdx;
+        without.splice(insertIdx, 0, scenes[oldIdx]!);
+        // Assign integer ranks as data-start; the retiming pass (sorts by data-start)
+        // lays them out cumulatively in this new order. DOM order is left untouched
+        // (rendering is data-start-driven; moving nodes would tangle non-scene siblings).
+        without.forEach((s, i) => s.setAttribute("data-start", fmtNum(i)));
+        const rel = edit.after ? "after" : "before";
+        diff.push({
+          op: edit.op,
+          target: `scene ${edit.sceneId}`,
+          attr: "order",
+          from: `position ${oldIdx + 1}`,
+          to: `position ${insertIdx + 1} (${rel} ${anchorId})`,
+        });
         break;
       }
 
