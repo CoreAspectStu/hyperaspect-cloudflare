@@ -3,7 +3,7 @@
 import AuthGate from "@/components/AuthGate";
 import TemplateGallery from "@/components/TemplateGallery";
 import ThematicEditor from "@/components/ThematicEditor";
-import type { Template } from "@/lib/templates";
+import { getTemplateById, type Template } from "@/lib/templates";
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -16,7 +16,10 @@ import { isClientRenderSupported, renderInBrowser, detectOptimalWorkers } from "
 import AdminPanel, { AdminGearButton, loadAdminConfig, saveAdminConfig, isAdminMode, type AdminRenderConfig, DEFAULT_ADMIN_CONFIG } from "@/components/AdminPanel";
 import StoryModeSelector from "@/components/StoryModeSelector";
 import StoryModeFlow from "@/components/StoryModeFlow";
+import YouTubeCloneFlow from "@/components/youtube-clone/YouTubeCloneFlow";
 import type { StoryModeDefinition } from "@/lib/story-modes";
+import OnboardingFlow, { type OnboardingData } from "@/components/OnboardingFlow";
+import { buildJobAdRenderer } from "@/lib/job-ad-canvas-renderer";
 
 type Step = "input" | "configure" | "interview" | "generating" | "result";
 type InputType = "video" | "text" | "url" | "voice" | "document";
@@ -58,9 +61,6 @@ interface AdvancedSettings {
 const INPUT_METHODS: { type: InputType; icon: typeof Video; label: string; desc: string; color: string }[] = [
   { type: "text", icon: Type, label: "Describe It", desc: "Type your idea in plain English", color: "#ff0000" },
   { type: "url", icon: Link2, label: "Paste URL", desc: "Turn any website into a video", color: "#ffd60a" },
-  { type: "video", icon: Video, label: "Upload Video", desc: "Remix or improve existing footage", color: "#00e5ff" },
-  { type: "voice", icon: Mic, label: "Voice Note", desc: "Speak your concept aloud", color: "#b8ff00" },
-  { type: "document", icon: FileText, label: "Upload Doc", desc: "PDF, CSV, or DOCX input", color: "#ff6ec7" },
 ];
 
 const ASPECT_RATIOS: { value: AspectRatio; label: string; sub: string; w: number; h: number }[] = [
@@ -86,6 +86,15 @@ export default function Home() {
   const [emailSaved, setEmailSaved] = useState(false);
   const [galleryVideos, setGalleryVideos] = useState<GalleryVideo[]>([]);
   const [brief, setBrief] = useState<Record<string, string>>({});
+  // ─── Smart Fill: auto-extract template slots from URL or text ───
+  const [smartFillInput, setSmartFillInput] = useState("");
+  const [smartFillLoading, setSmartFillLoading] = useState(false);
+  const [smartFillResult, setSmartFillResult] = useState<{
+    slots: Record<string, string>;
+    confidence: number;
+    sourceMeta: { known: boolean; domain: string; strategy: string; sourceName: string };
+  } | null>(null);
+  const [smartFillError, setSmartFillError] = useState<string | null>(null);
   const [advSettings, setAdvSettings] = useState<AdvancedSettings>({
     style: "auto", captions: "auto", transition: "auto", voice: "auto", music: "auto"
   });
@@ -93,16 +102,33 @@ export default function Home() {
   const [activeVideo, setActiveVideo] = useState<GalleryVideo | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingKey, setOnboardingKey] = useState(0);
+  // Onboarding flow IS the app — always show it (never gate behind localStorage)
+  const [showPersonaFlow, setShowPersonaFlow] = useState(true);
 
-  // Show onboarding on first visit
+  // Show onboarding on first visit — disabled: OnboardingFlow IS the app now
+  // (kept for reference — the modal overlay is removed, fullscreen OnboardingFlow renders instead)
+  /*
   useEffect(() => {
     try {
-      if (!localStorage.getItem("ha_onboarded")) {
-        const t = setTimeout(() => setShowOnboarding(true), 1500);
+      if (!localStorage.getItem("ha_onboarded") && !showPersonaFlow) {
+        const t = setTimeout(() => {
+          // Don't interrupt if user has already entered a story mode or left the input step
+          setShowOnboarding((prev) => prev || (step === "input" && !activeStoryMode));
+        }, 1500);
         return () => clearTimeout(t);
       }
     } catch {}
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPersonaFlow]);
+
+  // Dismiss onboarding modal if user enters a story mode flow mid-display
+  useEffect(() => {
+    if (activeStoryMode || step !== "input") {
+      setShowOnboarding(false);
+    }
+  }, [activeStoryMode, step]);
+  */
 
   // Load admin config on mount
   useEffect(() => {
@@ -143,6 +169,152 @@ export default function Home() {
     setShowTemplates(false);
     setStep("configure");
   };
+  // Client-side render a recruitment job-ad from OnboardingData.
+  // Bypasses the configure step — goes directly to generating → result.
+  const startJobAdClientRender = async (data: OnboardingData) => {
+    const dims = data.format === "9:16" ? { w: 1080, h: 1920 } : { w: 1920, h: 1080 };
+    const DURATION = 30;
+    const FPS = 30;
+
+    setStep("generating");
+    setJob({
+      id: "client-" + Date.now().toString(36),
+      status: "rendering",
+      progress: 2,
+      estimatedSeconds: 30,
+    });
+
+    try {
+      const renderFrame = buildJobAdRenderer({
+        title: data.listingData.title || "Open Position",
+        company: data.listingData.company || data.companyUrl,
+        description: data.listingData.description || "",
+        brand: data.brand,
+        format: data.format,
+      });
+
+      const result = await renderInBrowser({
+        renderFrame,
+        duration: DURATION,
+        fps: FPS,
+        width: dims.w,
+        height: dims.h,
+        onProgress: (frame, total) => {
+          setJob((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  progress: Math.round((frame / total) * 100),
+                  estimatedSeconds: Math.max(1, Math.round((total - frame) / FPS)),
+                }
+              : prev,
+          );
+        },
+      });
+
+      const url = URL.createObjectURL(result.blob);
+      setJob({
+        id: "client-" + Date.now().toString(36),
+        status: "done",
+        progress: 100,
+        estimatedSeconds: 0,
+        resultUrl: url,
+      });
+      setStep("result");
+      fetchGallery();
+    } catch (err) {
+      console.error("[job-ad-render] client render failed:", err);
+      setJob((prev) => prev ? {
+        ...prev,
+        status: "error",
+        error: String(err instanceof Error ? err.message : err),
+      } : {
+        id: "client-error",
+        status: "error",
+        progress: 0,
+        estimatedSeconds: 0,
+        error: "Video render failed. Please try again.",
+      });
+      // Stay on "generating" — it shows the error UI already
+    }
+  };
+
+  const handleOnboardingComplete = (data: OnboardingData) => {
+    // Stamp done so we don't show the flow again
+    try { localStorage.setItem("ha_persona_done", "1"); } catch {}
+
+    // Map onboarding data → brief
+    const onboardingBrief: Record<string, string> = {
+      _template_id: data.templateId,
+      _persona: data.persona,
+      _listing_url: data.listingUrl,
+      _company_url: data.companyUrl,
+      job_title: data.listingData.title,
+      company_name: data.listingData.company,
+      job_description: data.listingData.description,
+      voice_style: data.voice,
+      music_style: data.music,
+      aspectRatio: data.format,
+    };
+    // Include brand overrides
+    if (data.brand.logo) onboardingBrief._brand_logo = data.brand.logo;
+    if (data.brand.primary) onboardingBrief._brand_primary = data.brand.primary;
+    if (data.brand.accent) onboardingBrief._brand_accent = data.brand.accent;
+    if (data.brand.bg) onboardingBrief._brand_bg = data.brand.bg;
+
+    setBrief(onboardingBrief);
+
+    // Apply brand
+    setBrandColors({ primary: data.brand.primary, accent: data.brand.accent, bg: data.brand.bg });
+    if (data.brand.logo) setBrandLogo(data.brand.logo);
+
+    // Set format
+    setAspectRatio(data.format);
+
+    // Pre-fill brief text
+    const persona = data.persona.replace(/-/g, " ");
+    const title = data.listingData.title || "this listing";
+    const co = data.listingData.company || "";
+    const descText = `Create a ${data.format} video for ${persona}${co ? ` at ${co}` : ""}. Title: ${title}. Voice: ${data.voice}. Music: ${data.music}.`;
+    setInputValue(descText);
+    setInputType("text");
+
+    setShowPersonaFlow(false);
+
+    // Recruitment personas go straight to client-side rendering (no server needed)
+    const isRecruitment = data.persona === "recruiter" || data.persona === "hiring-manager";
+    if (isRecruitment && isClientRenderSupported()) {
+      void startJobAdClientRender(data);
+    } else {
+      // RE and other personas → server-side render pipeline (skip old configure step)
+      setStep("generating");
+      setJob({
+        id: "pending",
+        status: "queued",
+        progress: 0,
+        estimatedSeconds: 180,
+      });
+      (async () => {
+        try {
+          const res = await fetch("/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              inputType: "text",
+              inputValue: descText,
+              brief: onboardingBrief,
+            }),
+          });
+          if (!res.ok) throw new Error("Generation request failed");
+          const resData = await res.json();
+          setJob(resData);
+        } catch (err) {
+          setJob({ id: "error", status: "error", progress: 0, estimatedSeconds: 0, error: "Failed to start generation. Please try again." });
+        }
+      })();
+    }
+  };
+
   const [galleryFilter, setGalleryFilter] = useState<string>("all");
   const [galleryLimit, setGalleryLimit] = useState(6);
   const [shareCopied, setShareCopied] = useState(false);
@@ -206,15 +378,16 @@ export default function Home() {
   useEffect(() => {
     if (!job || job.status === "done" || job.status === "error") return;
     let pollCount = 0;
-    const MAX_POLLS = 120; // 10 minutes at 5s intervals
+    const MAX_POLLS = 240; // 20 minutes at 5s intervals (45s video w/ AI images = 10-15 min)
     const interval = setInterval(async () => {
       const current = jobRef.current;
       if (!current || current.status === "done" || current.status === "error") return;
       if (!current.id || current.id === "pending") return; // Skip polling until real job ID arrives
+      if (current.id.startsWith("client-")) return; // Client-side render — no server polling
       pollCount++;
       if (pollCount > MAX_POLLS) {
         // Timeout — show error instead of infinite spinner (P0-1 fix)
-        setJob({ ...current, status: "error", error: "Render timed out (10 min). Please try again." });
+        setJob({ ...current, status: "error", error: "Render timed out (20 min). Please try again." });
         generatingRef.current = false;
         clearInterval(interval);
         return;
@@ -310,6 +483,9 @@ export default function Home() {
     setUploadStatus("idle"); setUploadProgress(0); setUploadError(null);
     setTranscribeError(null);
     uploadedFileRef.current = null;
+    // Reset Smart Fill state
+    setSmartFillInput(""); setSmartFillLoading(false);
+    setSmartFillResult(null); setSmartFillError(null);
     setStep("configure");
   };
 
@@ -641,6 +817,229 @@ export default function Home() {
     setIsAiTyping(false);
   };
 
+  // ─── Smart Fill: auto-extract template slots from URL or text ───
+  const handleSmartFill = async () => {
+    if (!smartFillInput.trim()) return;
+    setSmartFillLoading(true);
+    setSmartFillError(null);
+    setSmartFillResult(null);
+    try {
+      const templateId = brief._template_id;
+      const template = templateId ? getTemplateById(templateId) : null;
+      // Build slots payload matching the /api/extract-slots contract
+      const slotsPayload: Record<string, { label: string; type: string; default?: string }> = {};
+      if (template) {
+        for (const [key, slot] of Object.entries(template.slots)) {
+          slotsPayload[key] = { label: slot.label, type: slot.type, default: slot.default || "" };
+        }
+      }
+      const res = await fetch("/api/extract-slots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          input: smartFillInput.trim(),
+          templateId: templateId || "",
+          slots: slotsPayload,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Extraction failed (${res.status})`);
+      }
+      const data = await res.json();
+      // Merge extracted slot values into the brief so the interview skips them
+      if (data.slots && typeof data.slots === "object") {
+        setBrief(prev => ({ ...prev, ...data.slots }));
+      }
+      setSmartFillResult({
+        slots: data.slots || {},
+        confidence: typeof data.confidence === "number" ? data.confidence : 0,
+        sourceMeta: data.sourceMeta || { known: false, domain: "", strategy: "", sourceName: "" },
+      });
+    } catch (err) {
+      setSmartFillError(err instanceof Error ? err.message : "Smart Fill failed. Please try manually.");
+    } finally {
+      setSmartFillLoading(false);
+    }
+  };
+
+  // Smart Fill → skip interview, go straight to generation
+  const handleSmartFillGenerate = () => {
+    setBrief(prev => ({ ...prev, aspectRatio }));
+    startGeneration({ ...brief, aspectRatio });
+  };
+
+  // Helper: extract hostname from user input for the loading message
+  const smartFillDomain = (() => {
+    try { return new URL(smartFillInput.trim()).hostname.replace(/^www\./, ""); }
+    catch { return null; }
+  })();
+
+  // Reusable Smart Fill card — rendered on configure + interview steps
+  const renderSmartFillCard = (compact: boolean = false) => {
+    if (!brief._template_id) return null;
+    const tmpl = getTemplateById(brief._template_id);
+    const totalSlots = tmpl ? Object.keys(tmpl.slots).length : 0;
+    const filledCount = smartFillResult
+      ? Object.values(smartFillResult.slots).filter(v => v && String(v).trim()).length
+      : 0;
+    const pct = smartFillResult ? Math.round(smartFillResult.confidence * 100) : 0;
+
+    return (
+      <div style={{
+        backgroundColor: "var(--bg-surface)",
+        border: "var(--border-width) solid var(--border)",
+        boxShadow: "var(--shadow)",
+        padding: compact ? "20px" : "28px",
+        marginBottom: "24px",
+      }}>
+        {/* ── Header ── */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+          <span style={{ fontSize: "1.5rem", lineHeight: 1 }}>🪄</span>
+          <h3 style={{
+            fontSize: "1.15rem", fontWeight: 900, textTransform: "uppercase",
+            letterSpacing: "-0.01em", margin: 0, color: "var(--text)",
+          }}>
+            Smart Fill
+          </h3>
+        </div>
+
+        {/* ── Input + Button ── */}
+        <div style={{ display: "flex", gap: "10px", marginBottom: "10px", flexWrap: "wrap" }}>
+          <input
+            type="text"
+            value={smartFillInput}
+            onChange={(e) => setSmartFillInput(e.target.value)}
+            placeholder="Paste a listing URL or property details…"
+            disabled={smartFillLoading}
+            onKeyDown={(e) => { if (e.key === "Enter" && smartFillInput.trim()) handleSmartFill(); }}
+            style={{
+              flex: "1", minWidth: "180px", padding: "10px 14px", fontSize: "0.9rem",
+              backgroundColor: "var(--bg-base)", color: "var(--text)",
+              borderWidth: "3px", borderStyle: "solid", borderColor: "var(--border)",
+              outline: "none", borderRadius: 0,
+            }}
+          />
+          <button
+            onClick={handleSmartFill}
+            disabled={!smartFillInput.trim() || smartFillLoading}
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px",
+              padding: "10px 20px", backgroundColor: "var(--accent)", color: "#fff",
+              fontSize: "0.8rem", fontWeight: 900, textTransform: "uppercase",
+              borderRadius: 0, borderWidth: "var(--border-width)", borderStyle: "solid",
+              borderColor: "var(--border)", boxShadow: "var(--shadow)",
+              cursor: smartFillLoading ? "wait" : "pointer",
+              opacity: (!smartFillInput.trim() || smartFillLoading) ? 0.5 : 1,
+              transition: "all 0.2s ease-out", whiteSpace: "nowrap",
+            }}
+          >
+            {smartFillLoading ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Extracting{smartFillDomain ? ` from ${smartFillDomain}` : ""}…</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                <span>Auto-Fill from URL</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* ── Helper text ── */}
+        <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", fontWeight: 600, margin: 0 }}>
+          We&apos;ll extract everything automatically. Works with Ray White, Domain, Colliers, CBRE, JLL, and most AU property sites.
+        </p>
+
+        {/* ── Error ── */}
+        {smartFillError && (
+          <div style={{
+            marginTop: "10px", padding: "8px 12px",
+            backgroundColor: "#fee2e2", border: "3px solid var(--accent)",
+            fontSize: "0.82rem", fontWeight: 600, color: "var(--text)",
+            display: "flex", alignItems: "flex-start", gap: "6px",
+          }}>
+            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <span style={{ flex: 1 }}>{smartFillError}</span>
+            <button
+              onClick={() => setSmartFillError(null)}
+              style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 900, color: "var(--text)", fontSize: "1rem" }}
+            >✕</button>
+          </div>
+        )}
+
+        {/* ── Success ── */}
+        {smartFillResult && !smartFillError && (
+          <div style={{
+            marginTop: "10px", padding: "12px 14px",
+            backgroundColor: "var(--lime)", border: "3px solid var(--border)",
+            boxShadow: "3px 3px 0 var(--border)",
+          }}>
+            {/* Summary */}
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+              <Check className="w-5 h-5 flex-shrink-0" />
+              <span style={{ fontSize: "0.88rem", fontWeight: 800, color: "var(--text)" }}>
+                Extracted {filledCount} of {totalSlots} fields ({pct}% confidence)
+                {smartFillResult.sourceMeta?.sourceName ? ` from ${smartFillResult.sourceMeta.sourceName}` : ""}
+              </span>
+              {smartFillResult.sourceMeta?.sourceName && (
+                <span style={{
+                  display: "inline-block", padding: "2px 8px",
+                  backgroundColor: "var(--bg-base)", border: "2px solid var(--border)",
+                  fontSize: "0.65rem", fontWeight: 900, textTransform: "uppercase",
+                }}>
+                  {smartFillResult.sourceMeta.sourceName}
+                </span>
+              )}
+            </div>
+
+            {/* Unknown-source caveat */}
+            {smartFillResult.sourceMeta && !smartFillResult.sourceMeta.known && smartFillResult.sourceMeta.domain && (
+              <p style={{
+                fontSize: "0.78rem", fontWeight: 600, color: "var(--text)",
+                marginTop: "6px", lineHeight: 1.4,
+              }}>
+                ⚠️ Heads up: we haven&apos;t built a dedicated adapter for {smartFillResult.sourceMeta.domain}{' '}yet, but we extracted what we could. We&apos;ll add better support soon.
+              </p>
+            )}
+
+            {/* Actions */}
+            <div style={{ display: "flex", gap: "8px", marginTop: "10px", flexWrap: "wrap" }}>
+              <button
+                onClick={handleSmartFillGenerate}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "5px",
+                  padding: "7px 16px", backgroundColor: "var(--accent)", color: "#fff",
+                  fontSize: "0.75rem", fontWeight: 900, textTransform: "uppercase",
+                  borderRadius: 0, borderWidth: "3px", borderStyle: "solid",
+                  borderColor: "var(--border)", boxShadow: "3px 3px 0 var(--border)",
+                  cursor: "pointer",
+                }}
+              >
+                <ArrowRight className="w-3.5 h-3.5" /> Generate Video
+              </button>
+              <button
+                onClick={() => { setSmartFillResult(null); setSmartFillInput(""); }}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "5px",
+                  padding: "7px 16px", backgroundColor: "var(--bg-base)", color: "var(--text)",
+                  fontSize: "0.75rem", fontWeight: 900, textTransform: "uppercase",
+                  borderRadius: 0, borderWidth: "3px", borderStyle: "solid",
+                  borderColor: "var(--border)", boxShadow: "3px 3px 0 var(--border)",
+                  cursor: "pointer",
+                }}
+              >
+                Review Fields
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const handleChatReply = async (reply: string) => {
     const newMessages = [...messages, { role: "user" as const, content: reply }];
     setMessages(newMessages);
@@ -735,7 +1134,12 @@ export default function Home() {
           estimatedSeconds: 5,
         });
 
+        // TODO(mvp-rework): templateHtml must come from template-engine.ts once
+        // the template selection → variable fill → HTML output pipeline is wired.
+        // For now, pass empty string — the iframe-renderer will fail with a clear
+        // error if used without real HTML. The old hardcoded Canvas 2D path is removed.
         const result = await renderInBrowser({
+          templateHtml: "", // TODO: wire template-engine.ts output here
           duration: renderDuration,
           fps: renderFps,
           width: dims.w,
@@ -867,6 +1271,9 @@ export default function Home() {
     setBrandColors({ primary: "", accent: "", bg: "" });
     setBrandFonts({ heading: "", body: "" });
     setBrandExtracting(false); setBrandExtractNote(null);
+    // Reset Smart Fill state
+    setSmartFillInput(""); setSmartFillLoading(false);
+    setSmartFillResult(null); setSmartFillError(null);
   };
 
   const statusLabel = (status: VideoJob["status"]) => {
@@ -888,6 +1295,16 @@ export default function Home() {
   const activeMethod = INPUT_METHODS.find(m => m.type === inputType);
   const thumbClass = aspectRatio === "9:16" ? "thumb-9-16" : aspectRatio === "1:1" ? "thumb-1-1" : "thumb-16-9";
   const previewClass = aspectRatio === "9:16" ? "preview-9-16" : aspectRatio === "1:1" ? "preview-1-1" : "preview-16-9";
+
+  // Show persona-gated onboarding flow — this IS the app now
+  if (showPersonaFlow) {
+    return (
+      <OnboardingFlow
+        key={onboardingKey}
+        onComplete={handleOnboardingComplete}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen relative">
@@ -913,11 +1330,18 @@ export default function Home() {
         {/* ═══ STORY MODE FLOW — Interview → Storyboard → Generate ═══ */}
         {step === "input" && activeStoryMode && (
           <div className="min-h-[calc(100vh-var(--header-height))] flex flex-col items-center px-4 sm:px-8 md:px-20 lg:px-32 py-12">
-            <StoryModeFlow
-              mode={activeStoryMode}
-              onBack={() => setActiveStoryMode(null)}
-              onComplete={handleStoryModeComplete}
-            />
+            {activeStoryMode.id === "youtube-clone" ? (
+              <YouTubeCloneFlow
+                mode={activeStoryMode}
+                onBack={() => setActiveStoryMode(null)}
+              />
+            ) : (
+              <StoryModeFlow
+                mode={activeStoryMode}
+                onBack={() => setActiveStoryMode(null)}
+                onComplete={handleStoryModeComplete}
+              />
+            )}
           </div>
         )}
 
@@ -938,43 +1362,8 @@ export default function Home() {
               </p>
             </div>
 
-            {/* View toggle: Create from scratch vs Browse Templates */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-12 slide-up delay-1 w-full max-w-lg">
-              <button
-                onClick={() => setShowTemplates(false)}
-                className="btn-secondary"
-                style={{
-                  padding: "10px 20px", fontSize: "0.85rem", fontWeight: 800,
-                  backgroundColor: !showTemplates ? "#0a0a0a" : "var(--surface)",
-                  color: !showTemplates ? "var(--bg-base)" : "var(--text)",
-                  border: "4px solid var(--border)",
-                  boxShadow: "4px 4px 0 var(--border)",
-                }}
-              >
-                <Sparkles className="w-4 h-4" /> Create from Scratch
-              </button>
-              <button
-                onClick={() => setShowTemplates(true)}
-                className="btn-primary"
-                style={{
-                  padding: "10px 20px", fontSize: "0.85rem", fontWeight: 800,
-                  backgroundColor: showTemplates ? "var(--accent)" : "var(--surface)",
-                  color: showTemplates ? "#fff" : "var(--text)",
-                  border: "4px solid var(--border)",
-                  boxShadow: "4px 4px 0 var(--border)",
-                }}
-              >
-                <LayoutGrid className="w-4 h-4" /> Browse Templates (50)
-              </button>
-            </div>
-
-            {/* Template Gallery OR Input tiles */}
-            {showTemplates ? (
-              <div className="w-full max-w-6xl slide-up delay-1">
-                <TemplateGallery onSelectTemplate={handleTemplateSelect} />
-              </div>
-            ) : (
-            <>
+            {/* Focused product: guided creation only (RE + Recruitment).
+                Template browser hidden — 58 identical compose-generated templates removed from UX. */}
             {/* Input method tiles */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 sm:gap-6 lg:gap-8 w-full max-w-5xl mb-16 sm:mb-24 md:mb-28 slide-up delay-1">
               {INPUT_METHODS.map(({ type, icon: Icon, label, desc, color }) => (
@@ -1020,7 +1409,7 @@ export default function Home() {
                 </div>
                 <div className="flex gap-3 mb-8 flex-wrap">
                   {["all", "16:9", "9:16", "1:1"].map(f => (
-                    <button key={f} onClick={() => setGalleryFilter(f)} className="chip" style={galleryFilter === f ? { backgroundColor: '#ff0000', color: '#fff' } : {}}>
+                    <button key={f} onClick={() => setGalleryFilter(f)} className="chip" style={galleryFilter === f ? { backgroundColor: '#c20000', color: '#fff' } : {}}>
                       {f === "all" ? "All" : f === "16:9" ? "16:9 Landscape" : f === "9:16" ? "9:16 Portrait" : "1:1 Square"}
                     </button>
                   ))}
@@ -1082,8 +1471,6 @@ export default function Home() {
                 })()}
               </div>
             )}
-            </>
-            )}
           </div>
         )}
 
@@ -1106,6 +1493,9 @@ export default function Home() {
                   <p>{activeMethod.desc}</p>
                 </div>
               </div>
+
+              {/* ═══ Smart Fill ═══ */}
+              {renderSmartFillCard(false)}
 
               {/* Input area */}
               <div className="mb-12">
@@ -1418,6 +1808,9 @@ export default function Home() {
               </div>
             </div>
 
+            {/* ═══ Smart Fill (compact) ═══ */}
+            {renderSmartFillCard(true)}
+
             <div className="space-y-6 mb-4">
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -1589,6 +1982,14 @@ export default function Home() {
           brief={brief}
           templateId={brief._template_id}
           jobId={job.id}
+          onCreateNew={() => {
+            // P0-1 fix: restart onboarding instead of reloading (which dumps to old app)
+            setOnboardingKey(prev => prev + 1);
+            setShowPersonaFlow(true);
+            setJob(null);
+            setStep("input");
+            localStorage.removeItem("ha_active_job");
+          }}
         />
       )}
 
@@ -1665,110 +2066,7 @@ export default function Home() {
         )}
       </main>
 
-      {/* ─── Onboarding Modal ─── */}
-      {showOnboarding && typeof document !== "undefined" && createPortal(
-        <div className="modal-overlay" onClick={() => {
-          setShowOnboarding(false);
-          try { localStorage.setItem("ha_onboarded", "1"); } catch {}
-        }}>
-          <div onClick={(e) => e.stopPropagation()} style={{
-            backgroundColor: 'var(--bg-surface)',
-            border: '4px solid var(--border)',
-            boxShadow: 'var(--shadow-lg)',
-            padding: '40px',
-            maxWidth: '540px',
-            width: '90%',
-            position: 'relative',
-          }}>
-            <button onClick={() => {
-              setShowOnboarding(false);
-              try { localStorage.setItem("ha_onboarded", "1"); } catch {}
-            }} style={{
-              position: 'absolute', top: '16px', right: '16px',
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-muted)', fontSize: '1.5rem', fontWeight: 900,
-            }}>✕</button>
-
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: '64px', height: '64px',
-                backgroundColor: 'var(--accent)',
-                border: '4px solid var(--border)',
-                boxShadow: 'var(--shadow)',
-                marginBottom: '24px',
-              }}>
-                <Sparkles style={{ width: '32px', height: '32px', color: 'white' }} />
-              </div>
-
-              <h2 style={{
-                fontSize: '1.75rem', fontWeight: 900,
-                color: 'var(--text)', marginBottom: '16px',
-                textTransform: 'uppercase', letterSpacing: '-0.02em',
-              }}>
-                Welcome to HyperAspect
-              </h2>
-
-              <p style={{
-                fontSize: '1rem', fontWeight: 600,
-                color: 'var(--text-muted)', marginBottom: '32px',
-                lineHeight: 1.5,
-              }}>
-                Create professional videos in 30 seconds. Here's how:
-              </p>
-
-              <div style={{ textAlign: 'left', marginBottom: '32px' }}>
-                {[
-                  { icon: TypeIcon, title: '1. Describe', desc: 'Type your idea or paste a URL' },
-                  { icon: LayoutGrid, title: '2. Pick a Template', desc: '50+ templates for any industry' },
-                  { icon: Sparkles, title: '3. Generate', desc: 'AI does the rest — narration, music, captions' },
-                  { icon: Download, title: '4. Download', desc: 'Get your video or upload to YouTube' },
-                ].map((step, i) => (
-                  <div key={i} style={{
-                    display: 'flex', alignItems: 'center', gap: '16px',
-                    padding: '12px 0',
-                    borderBottom: i < 3 ? '2px dashed var(--border)' : 'none',
-                  }}>
-                    <div style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      width: '40px', height: '40px', flexShrink: 0,
-                      backgroundColor: 'var(--bg-base)',
-                      border: '3px solid var(--border)',
-                    }}>
-                      <step.icon style={{ width: '20px', height: '20px', color: 'var(--accent)' }} />
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--text)' }}>
-                        {step.title}
-                      </div>
-                      <div style={{ fontWeight: 500, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                        {step.desc}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <button onClick={() => {
-                setShowOnboarding(false);
-                try { localStorage.setItem("ha_onboarded", "1"); } catch {}
-              }} style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                gap: '8px', padding: '14px 32px',
-                backgroundColor: 'var(--accent)', color: 'white',
-                fontSize: '1rem', fontWeight: 900,
-                textTransform: 'uppercase',
-                border: '4px solid var(--border)',
-                boxShadow: 'var(--shadow)',
-                cursor: 'pointer',
-              }}>
-                Let's Go <ArrowRight style={{ width: '18px', height: '18px' }} />
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      {/* ─── Onboarding Modal — REMOVED: OnboardingFlow IS the app now ─── */}
 
       {/* ─── Video Player Modal (Portal) ─── */}
       {activeVideo && typeof document !== "undefined" && createPortal(
@@ -1829,14 +2127,14 @@ export default function Home() {
               <span style={{
                 display: 'inline-block',
                 padding: '4px 10px',
-                backgroundColor: '#ff0000',
+                backgroundColor: '#c20000',
                 color: '#fff',
                 fontSize: '0.75rem',
                 fontWeight: 700,
                 textTransform: 'uppercase',
               }}>{activeVideo.format || '16:9'}</span>
-              <span style={{ fontSize: '0.875rem', fontWeight: 600, color: '#6b6b6b', textTransform: 'uppercase' }}>AI Generated</span>
-              {activeVideo.duration && <span style={{ fontSize: '0.875rem', fontWeight: 600, color: '#6b6b6b' }}>{activeVideo.duration}</span>}
+              <span style={{ fontSize: '0.875rem', fontWeight: 600, color: '#555555', textTransform: 'uppercase' }}>AI Generated</span>
+              {activeVideo.duration && <span style={{ fontSize: '0.875rem', fontWeight: 600, color: '#555555' }}>{activeVideo.duration}</span>}
             </div>
             {/* Action buttons */}
             <div style={{ display: 'flex', gap: '12px', marginTop: '20px', flexWrap: 'wrap' }}>
@@ -1845,7 +2143,7 @@ export default function Home() {
                 download
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: '8px',
-                  padding: '12px 20px', backgroundColor: '#ff0000', color: '#fff',
+                  padding: '12px 20px', backgroundColor: '#c20000', color: '#fff',
                   fontSize: '0.875rem', fontWeight: 800, textTransform: 'uppercase',
                   border: '4px solid #0a0a0a', boxShadow: '4px 4px 0px #0a0a0a',
                   cursor: 'pointer', textDecoration: 'none',
