@@ -31,7 +31,16 @@ export type StructuralEdit =
   | { op: "trackTiming"; trackId: string; start?: number; duration?: number; sceneId?: string }
   | { op: "text"; trackId: string; text: string; sceneId?: string }
   | { op: "removeScene"; sceneId: string }
-  | { op: "reorderScene"; sceneId: string; before?: string; after?: string };
+  | { op: "reorderScene"; sceneId: string; before?: string; after?: string }
+  | {
+      op: "addScene";
+      sceneId: string;
+      before?: string;
+      after?: string;
+      duration: number;
+      headline?: string;
+      subtext?: string;
+    };
 
 export interface StructuralDiff {
   op: string;
@@ -203,6 +212,70 @@ export function applyStructuralEdits(html: string, edits: StructuralEdit[]): Pro
           attr: "order",
           from: `position ${oldIdx + 1}`,
           to: `position ${insertIdx + 1} (${rel} ${anchorId})`,
+        });
+        break;
+      }
+
+      case "addScene": {
+        const anchorId = edit.before != null ? edit.before : edit.after;
+        if (!anchorId) {
+          errors.push("addScene " + edit.sceneId + " needs before or after");
+          break;
+        }
+        if (findById(root, edit.sceneId)) {
+          errors.push("addScene: id already exists: " + edit.sceneId);
+          break;
+        }
+        const anchor = findById(root, anchorId);
+        if (!anchor || !isScene(anchor)) {
+          errors.push("addScene: unknown anchor scene " + anchorId);
+          break;
+        }
+        // Self-contained inline-styled text card — renders readably inside any
+        // composition's CSS (doesn't depend on the comp's classes).
+        const head = escapeText(edit.headline ?? edit.sceneId);
+        const sub = edit.subtext
+          ? '<div style="font-size:38px;font-weight:500;color:#17E88F;margin-top:24px">' +
+            escapeText(edit.subtext) +
+            "</div>"
+          : "";
+        const sceneHtml =
+          '<div id="' + edit.sceneId + '" class="scene clip" data-start="0" data-duration="' +
+          fmtNum(edit.duration) +
+          '" data-track-index="0"' +
+          ' style="display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)">' +
+          '<div style="text-align:center;color:#fff;font-family:Inter,system-ui,sans-serif;padding:0 120px">' +
+          '<div style="font-size:90px;font-weight:900;letter-spacing:-.01em;line-height:1.05">' +
+          head +
+          "</div>" +
+          sub +
+          "</div></div>";
+        const node = parse(sceneHtml).querySelector(".scene.clip");
+        if (!node) {
+          errors.push("addScene: failed to build scene " + edit.sceneId);
+          break;
+        }
+        const compRoot = root.querySelector("#root");
+        if (!compRoot) {
+          errors.push("addScene: composition has no #root");
+          break;
+        }
+        compRoot.appendChild(node); // append into #root (DOM position cosmetic; retiming places by data-start)
+        // Rank scenes with the new one before/after the anchor; retiming normalizes.
+        const scenes = root
+          .querySelectorAll(".scene.clip")
+          .sort((a, b) => numAttr(a.attributes["data-start"]) - numAttr(b.attributes["data-start"]));
+        const without = scenes.filter((s) => s.id !== edit.sceneId);
+        const anchorIdx = without.findIndex((s) => s.id === anchorId);
+        const insertIdx = edit.after ? anchorIdx + 1 : anchorIdx;
+        without.splice(insertIdx, 0, node);
+        without.forEach((s, i) => s.setAttribute("data-start", fmtNum(i)));
+        diff.push({
+          op: edit.op,
+          target: "scene " + edit.sceneId,
+          attr: "added",
+          from: "",
+          to: fmtNum(edit.duration) + "s",
         });
         break;
       }

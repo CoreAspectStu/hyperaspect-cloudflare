@@ -225,6 +225,7 @@ HARD CONSTRAINTS (architecture D3/D4):
   {"op":"text","trackId":"<text id>","text":"<new copy>"}              rewrite structural text (plain literal text only)
   {"op":"removeScene","sceneId":"<id>"}                               remove a scene (the cut stays contiguous)
   {"op":"reorderScene","sceneId":"<id>","before":"<id>"}              move a scene before/after another (use before OR after)
+  {"op":"addScene","sceneId":"<newid>","after":"<id>","duration":<s>,"headline":"<text>","subtext":"<text>"}  add a new text scene (use before OR after)
 - Numbers are seconds. Asset refs are relative paths (e.g. assets/foo.mp4).
 
 Respond with STRICT JSON only:
@@ -274,6 +275,17 @@ function coerceEdit(e: unknown): StructuralEdit | null {
       const before = str("before");
       const after = str("after");
       return sceneId && (before || after) ? { op, sceneId, before, after } : null;
+    }
+    case "addScene": {
+      const sceneId = str("sceneId");
+      const before = str("before");
+      const after = str("after");
+      const duration = num("duration");
+      const headline = str("headline");
+      const subtext = str("subtext");
+      return sceneId && (before || after) && duration != null
+        ? { op, sceneId, before, after, duration, headline, subtext }
+        : null;
     }
     default:
       return null;
