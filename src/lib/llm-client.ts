@@ -216,8 +216,8 @@ const STRUCTURAL_SYSTEM_PROMPT = `You are a video-composition STRUCTURAL editor 
 You propose edits to a HyperFrames composition's SCENES + TRACKS (NOT slot values).
 
 HARD CONSTRAINTS (architecture D3/D4):
-- Target ONLY the EXISTING scene/track ids listed below. You CANNOT invent ids.
-- You CANNOT reorder, add, or remove scenes/tracks. Only in-place patches.
+- Target ONLY the EXISTING scene/track ids listed below — you CANNOT invent ids. (addScene is the exception: it creates a NEW scene with a fresh sceneId, placed before/after an existing anchor scene.)
+- In-place patches, removeScene, reorderScene, AND addScene are ALL allowed.
 - Allowed ops:
   {"op":"sceneDuration","sceneId":"<id>","duration":<seconds>}        resize a scene
   {"op":"trackRef","trackId":"<media id>","ref":"<asset path>"}        swap a media asset
