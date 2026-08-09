@@ -1314,7 +1314,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             {/* ════ FOOTER: render + status ════ */}
             <div style={footerStyle}>
               {approval && <ApprovalBadge approval={approval} />}
-              {delivery?.delivered && <DeliveryBadge delivery={delivery} />}
+              {delivery?.delivered && <DeliveryBadge delivery={delivery} videoName={templateId ?? jobId ?? ""} />}
               {deliverError && (
                 <div style={errorPillStyle}>
                   <AlertCircle size={15} /> <span style={{ flex: 1 }}>{deliverError}</span>
@@ -2478,7 +2478,7 @@ function ApprovalBadge({ approval }: { approval: ApprovalState }) {
 
 /** Delivery record pill (delivery-enforcement). `current` false = a newer render
  *  made the delivered cut stale (re-approve + re-deliver). */
-function DeliveryBadge({ delivery }: { delivery: DeliveryState }) {
+function DeliveryBadge({ delivery, videoName }: { delivery: DeliveryState; videoName: string }) {
   const st = delivery.current
     ? successPillStyle
     : {
@@ -2494,6 +2494,9 @@ function DeliveryBadge({ delivery }: { delivery: DeliveryState }) {
         textTransform: "uppercase",
         letterSpacing: "0.03em",
       };
+  const shareUrl = videoName
+    ? `https://render.coreaspectai.com/video-share/${encodeURIComponent(videoName)}`
+    : "";
   return (
     <div style={st}>
       {delivery.current ? <Send size={15} /> : <AlertCircle size={15} />}
@@ -2502,6 +2505,17 @@ function DeliveryBadge({ delivery }: { delivery: DeliveryState }) {
           ? `Delivered · ${delivery.mp4 ?? ""}`
           : "Delivered cut stale — re-approve + re-deliver"}
       </span>
+      {delivery.current && shareUrl && (
+        <a
+          href={shareUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "inherit", fontWeight: 900, textDecoration: "none" }}
+          title="Open the delivered cut (public share link — only delivered cuts are viewable)"
+        >
+          ↗ Share
+        </a>
+      )}
     </div>
   );
 }
