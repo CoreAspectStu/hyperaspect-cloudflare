@@ -17,6 +17,14 @@ export interface TemplateStore {
   get(id: string): Promise<Template | null>;
   /** Read the composition HTML (the render target). */
   composition(id: string): Promise<string | null>;
+  /** Resolve the compositionPath (default "index.html") without a full get(). */
+  compositionPath(id: string): Promise<string>;
+  /**
+   * Read an arbitrary asset file (e.g. `assets/foo.png`) as bytes, or null if
+   * absent. Used to serve template assets to the in-browser scene preview.
+   * `rel` is relative to the template dir and must not escape it.
+   */
+  readFile(id: string, rel: string): Promise<Uint8Array | null>;
   /**
    * Persist deterministic slot-value edits (D4). Stored as a per-template
    * `values.json` overlay until the Video model lands.
@@ -67,6 +75,7 @@ function applyValues(t: Template, json: string | null): void {
 /* ── Structural R2 types (dep-free; the real Workers R2 bucket matches this) ── */
 interface R2ObjectBodyLike {
   text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 interface R2ObjectsLike {
   objects: { key: string }[];
@@ -154,6 +163,25 @@ export class FsTemplateStore implements TemplateStore {
     }
   }
 
+  async compositionPath(id: string): Promise<string> {
+    try {
+      const raw = await readFile(join(this.dir, id, "template.json"), "utf8");
+      return (JSON.parse(raw) as Partial<Template>).compositionPath ?? "index.html";
+    } catch {
+      return "index.html";
+    }
+  }
+
+  async readFile(id: string, rel: string): Promise<Uint8Array | null> {
+    try {
+      const buf = await readFile(join(this.dir, id, rel));
+      // Node Buffer → Uint8Array view (no copy).
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    } catch {
+      return null;
+    }
+  }
+
   async saveValues(id: string, values: Record<string, string | number>): Promise<void> {
     await writeFile(join(this.dir, id, "values.json"), JSON.stringify(values, null, 2), "utf8");
   }
@@ -216,8 +244,14 @@ export class R2TemplateStore implements TemplateStore {
     return body ? await body.text() : null;
   }
 
+  async readFile(id: string, rel: string): Promise<Uint8Array | null> {
+    const body = await this.bucket.get(`${R2_PREFIX}${id}/${rel}`);
+    if (!body) return null;
+    return new Uint8Array(await body.arrayBuffer());
+  }
+
   /** Read compositionPath from the sidecar (default "index.html") without a full get(). */
-  private async compositionPath(id: string): Promise<string> {
+  async compositionPath(id: string): Promise<string> {
     const body = await this.bucket.get(`${R2_PREFIX}${id}/template.json`);
     if (!body) return "index.html";
     try {
