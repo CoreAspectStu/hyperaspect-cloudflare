@@ -43,6 +43,7 @@ import {
   Send,
 } from "lucide-react";
 import type { Slot, Track } from "@/lib/template-store/types";
+import { ScenePreview } from "./ScenePreview";
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Types
@@ -333,23 +334,26 @@ const TRACK_ICON: Record<string, string> = {
  * Style constants (neo-brutalist design system)
  * ════════════════════════════════════════════════════════════════════════════ */
 
+// Light, professional video-editor palette (Canva/VEED-style). Token-driven so
+// the whole component reskins here.
 const COLORS = {
-  bg: "#fef6e4",
-  surface: "#ffffff",
-  border: "#0a0a0a",
-  accent: "#ff3b30",
-  accent2: "#b8ff00",
-  text: "#0a0a0a",
-  textMuted: "#6b6b6b",
-  danger: "#ff4444",
-  success: "#22c55e",
+  bg: "#f7f8fa", // app canvas (light gray)
+  surface: "#ffffff", // panels / cards
+  surfaceAlt: "#eef1f5", // raised / hover
+  border: "#e3e7ec", // light dividers
+  accent: "#4f46e5", // primary action (indigo)
+  accent2: "#0ea5e9", // secondary / active highlight (sky)
+  text: "#1a1d23", // primary text
+  textMuted: "#697386", // secondary text
+  danger: "#dc2626",
+  success: "#16a34a",
 };
 
-const BORDER = `4px solid ${COLORS.border}`;
-const BORDER_SM = `3px solid ${COLORS.border}`;
-const SHADOW = "6px 6px 0 #0a0a0a";
-const SHADOW_SM = "3px 3px 0 #0a0a0a";
-const SHADOW_LG = "8px 8px 0 #0a0a0a";
+const BORDER = `1px solid ${COLORS.border}`;
+const BORDER_SM = `1px solid ${COLORS.border}`;
+const SHADOW = "0 1px 3px rgba(16,24,40,0.08), 0 4px 12px rgba(16,24,40,0.06)";
+const SHADOW_SM = "0 1px 2px rgba(16,24,40,0.06)";
+const SHADOW_LG = "0 4px 16px rgba(16,24,40,0.12)";
 
 /* ════════════════════════════════════════════════════════════════════════════
  * Default factory
@@ -456,7 +460,7 @@ function normalizeHex(v: string): string {
 
 export default function TimelineEditor({ jobId, templateId, onClose }: TimelineEditorProps) {
   const [manifest, setManifest] = useState<TimelineManifest | null>(null);
-  const [selectedBeat, setSelectedBeat] = useState<number | null>(null);
+  const [selectedBeat, setSelectedBeat] = useState<number | null>(0);
   const [activeTab, setActiveTab] = useState<TabKey>("beats");
   const [isRerendering, setIsRerendering] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -583,6 +587,21 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
     [manifest],
   );
 
+  // Bump to force the live preview to reload after edits persist (A1 wiring).
+  const [previewVersion, setPreviewVersion] = useState(0);
+
+  // Window for the selected scene: cumulative start + duration. Passed to the
+  // live preview so it can seek to mid-scene AND isolate just this scene.
+  const previewScene = useMemo(() => {
+    if (!manifest || selectedBeat == null) return null;
+    let start = 0;
+    for (let i = 0; i < selectedBeat && i < manifest.beats.length; i++) {
+      start += manifest.beats[i].duration;
+    }
+    const dur = manifest.beats[selectedBeat]?.duration ?? 4;
+    return { start, duration: dur };
+  }, [manifest, selectedBeat]);
+
   /* ══ Beat mutations ══ */
   const updateBeat = useCallback(
     (index: number, patch: Partial<TimelineBeat>) => {
@@ -624,6 +643,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
       setSlotSave({ status: "saved", msg: "Slots saved." });
+      setPreviewVersion((v) => v + 1); // reload preview with recomposed slot values
     } catch (e) {
       setSlotSave({
         status: "error",
@@ -989,6 +1009,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
         setProposeError(e instanceof Error ? e.message : "Apply failed.");
         return;
       }
+      setPreviewVersion((v) => v + 1); // reload preview with the patched composition
       handleRunGate({ raw: true });
       return;
     }
@@ -1011,6 +1032,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ values: vals }),
       });
+      setPreviewVersion((v) => v + 1); // reload preview with the proposed slot values
     } catch {
       /* best-effort; the gate still runs */
     }
@@ -1206,112 +1228,145 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
           </div>
         )}
 
-        {/* ── Main content ── */}
+        {/* ── Main content: 3-panel workspace ── */}
         {manifest && (
-          <>
-            {/* ════ TIMELINE BAR ════ */}
-            <div style={panelStyle}>
-              <div style={panelHeaderStyle}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 900, textTransform: "uppercase", fontSize: "0.8rem", letterSpacing: "0.03em" }}>
-                  <Film size={16} /> Timeline
-                </div>
-                <div style={{ fontSize: "0.75rem", fontWeight: 800, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: "4px" }}>
-                  <Clock size={13} /> {totalDuration.toFixed(1)}s total
-                </div>
-              </div>
-
-              <div style={timelineTrackStyle}>
+          <div style={workspaceStyle}>
+            {/* ════ LEFT RAIL: scene list ════ */}
+            <aside style={leftRailStyle}>
+              <div style={railHeaderStyle}><Layers size={14} /> Scenes</div>
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px" }}>
                 {manifest.beats.map((beat, i) => {
-                  const pct = totalDuration > 0 ? (beat.duration / totalDuration) * 100 : 100 / manifest.beats.length;
                   const isSelected = selectedBeat === i;
                   const icon = LAYOUT_OPTIONS.find((l) => l.value === beat.layout)?.icon || "🎬";
                   return (
                     <button
                       key={beat.id}
                       type="button"
-                      onClick={() => {
-                        setSelectedBeat(i);
-                        setActiveTab("beats");
-                      }}
+                      onClick={() => { setSelectedBeat(i); setActiveTab("beats"); }}
                       style={{
-                        ...timelineBlockStyle,
-                        width: `${pct}%`,
-                        backgroundColor: isSelected ? COLORS.accent : COLORS.surface,
-                        color: isSelected ? "#fff" : COLORS.text,
-                        transform: isSelected ? "translateY(-3px)" : "none",
-                        boxShadow: isSelected ? "4px 4px 0 #0a0a0a" : "2px 2px 0 #0a0a0a",
-                        zIndex: isSelected ? 2 : 1,
+                        ...railSceneBtnStyle,
+                        backgroundColor: isSelected ? "rgba(79,70,229,0.1)" : "transparent",
+                        color: isSelected ? COLORS.accent : COLORS.text,
+                        borderLeft: `3px solid ${isSelected ? COLORS.accent : "transparent"}`,
                       }}
                       title={`${beat.headline} — ${beat.duration}s`}
                     >
-                      <span style={{ fontSize: "1.2rem", lineHeight: 1 }}>{icon}</span>
-                      <span style={{ fontSize: "0.65rem", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
-                        {i + 1}. {beat.headline.slice(0, 14)}
+                      <span style={{ fontSize: "1rem", lineHeight: 1 }}>{icon}</span>
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700, fontSize: "0.72rem" }}>
+                        {i + 1}. {beat.headline}
                       </span>
-                      <span style={{ fontSize: "0.6rem", fontWeight: 700, opacity: 0.8 }}>
-                        {beat.duration}s
-                      </span>
+                      <span style={{ fontSize: "0.62rem", color: COLORS.textMuted }}>{beat.duration}s</span>
                     </button>
                   );
                 })}
-                <button
-                  type="button"
-                  onClick={addBeat}
-                  style={addBeatBlockStyle}
-                  title="Add beat"
-                >
-                  <Plus size={22} strokeWidth={2.5} />
-                </button>
               </div>
-            </div>
+              <button type="button" onClick={addBeat} style={railAddStyle} title="Add scene">
+                <Plus size={14} /> Add scene
+              </button>
+            </aside>
 
-            {/* ════ TAB BAR ════ */}
-            <div style={tabBarStyle}>
-              <TabButton active={activeTab === "beats"} onClick={() => setActiveTab("beats")} icon={<Layers size={16} />} label="Beats" />
-              <TabButton active={activeTab === "style"} onClick={() => setActiveTab("style")} icon={<Palette size={16} />} label="Style" />
-              <TabButton active={activeTab === "audio"} onClick={() => setActiveTab("audio")} icon={<Music size={16} />} label="Audio" />
-              {manifest.slots?.length ? (
-                <TabButton active={activeTab === "slots"} onClick={() => setActiveTab("slots")} icon={<Type size={16} />} label={`Slots (${manifest.slots.length})`} />
-              ) : null}
-            </div>
+            {/* ════ CENTER: preview + timeline strip ════ */}
+            <section style={centerColumnStyle}>
+              <ScenePreview
+                templateId={templateId ?? jobId ?? "deal-01"}
+                sceneStart={previewScene?.start ?? null}
+                sceneDuration={previewScene?.duration ?? 4}
+                reloadKey={previewVersion}
+              />
+              <div style={timelinePanelStyle}>
+                <div style={{ ...panelHeaderStyle, marginBottom: "6px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 800, textTransform: "uppercase", fontSize: "0.7rem", letterSpacing: "0.03em" }}>
+                    <Film size={14} /> Timeline
+                  </div>
+                  <div style={{ fontSize: "0.7rem", fontWeight: 700, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: "4px" }}>
+                    <Clock size={12} /> {totalDuration.toFixed(1)}s
+                  </div>
+                </div>
+                <div style={timelineTrackStyle}>
+                  {manifest.beats.map((beat, i) => {
+                    const pct = totalDuration > 0 ? (beat.duration / totalDuration) * 100 : 100 / manifest.beats.length;
+                    const isSelected = selectedBeat === i;
+                    const icon = LAYOUT_OPTIONS.find((l) => l.value === beat.layout)?.icon || "🎬";
+                    return (
+                      <button
+                        key={beat.id}
+                        type="button"
+                        onClick={() => { setSelectedBeat(i); setActiveTab("beats"); }}
+                        style={{
+                          ...timelineBlockStyle,
+                          width: `${pct}%`,
+                          backgroundColor: isSelected ? COLORS.accent : COLORS.surfaceAlt,
+                          color: isSelected ? "#fff" : COLORS.text,
+                          boxShadow: "none",
+                        }}
+                        title={`${beat.headline} — ${beat.duration}s`}
+                      >
+                        <span style={{ fontSize: "1.1rem", lineHeight: 1 }}>{icon}</span>
+                        <span style={{ fontSize: "0.62rem", fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+                          {i + 1}. {beat.headline.slice(0, 12)}
+                        </span>
+                        <span style={{ fontSize: "0.58rem", fontWeight: 700, opacity: 0.8 }}>{beat.duration}s</span>
+                      </button>
+                    );
+                  })}
+                  <button type="button" onClick={addBeat} style={addBeatBlockStyle} title="Add scene">
+                    <Plus size={20} strokeWidth={2.5} />
+                  </button>
+                </div>
+              </div>
+            </section>
 
-            {/* ════ TAB CONTENT ════ */}
-            <div style={tabContentStyle}>
-              {activeTab === "beats" && (
-                <BeatsTab
-                  manifest={manifest}
-                  selectedBeat={selectedBeat}
-                  onSelectBeat={setSelectedBeat}
-                  onUpdateBeat={updateBeat}
-                  onDeleteBeat={deleteBeat}
-                  onMoveBeat={moveBeat}
-                  onAddBeat={addBeat}
-                />
-              )}
-              {activeTab === "style" && (
-                <StyleTab
-                  manifest={manifest}
-                  onChange={(patch) => setManifest((prev) => (prev ? { ...prev, ...patch } : prev))}
-                />
-              )}
-              {activeTab === "audio" && (
-                <AudioTab
-                  manifest={manifest}
-                  onChange={(patch) => setManifest((prev) => (prev ? { ...prev, ...patch } : prev))}
-                />
-              )}
-              {activeTab === "slots" && manifest.slots && manifest.slotValues && (
-                <SlotsTab
-                  slots={manifest.slots}
-                  values={manifest.slotValues}
-                  onChange={updateSlot}
-                  onSave={handleSaveSlots}
-                  saveState={slotSave}
-                />
-              )}
-            </div>
+            {/* ════ RIGHT: inspector (tabs + content) ════ */}
+            <aside style={rightInspectorStyle}>
+              <div style={tabBarStyle}>
+                <TabButton active={activeTab === "beats"} onClick={() => setActiveTab("beats")} icon={<Layers size={16} />} label="Beats" />
+                <TabButton active={activeTab === "style"} onClick={() => setActiveTab("style")} icon={<Palette size={16} />} label="Style" />
+                <TabButton active={activeTab === "audio"} onClick={() => setActiveTab("audio")} icon={<Music size={16} />} label="Audio" />
+                {manifest.slots?.length ? (
+                  <TabButton active={activeTab === "slots"} onClick={() => setActiveTab("slots")} icon={<Type size={16} />} label={`Slots (${manifest.slots.length})`} />
+                ) : null}
+              </div>
+              <div style={tabContentStyle}>
+                {activeTab === "beats" && (
+                  <BeatsTab
+                    manifest={manifest}
+                    selectedBeat={selectedBeat}
+                    onSelectBeat={setSelectedBeat}
+                    onUpdateBeat={updateBeat}
+                    onDeleteBeat={deleteBeat}
+                    onMoveBeat={moveBeat}
+                    onAddBeat={addBeat}
+                  />
+                )}
+                {activeTab === "style" && (
+                  <StyleTab
+                    manifest={manifest}
+                    onChange={(patch) => setManifest((prev) => (prev ? { ...prev, ...patch } : prev))}
+                  />
+                )}
+                {activeTab === "audio" && (
+                  <AudioTab
+                    manifest={manifest}
+                    onChange={(patch) => setManifest((prev) => (prev ? { ...prev, ...patch } : prev))}
+                  />
+                )}
+                {activeTab === "slots" && manifest.slots && manifest.slotValues && (
+                  <SlotsTab
+                    slots={manifest.slots}
+                    values={manifest.slotValues}
+                    onChange={updateSlot}
+                    onSave={handleSaveSlots}
+                    saveState={slotSave}
+                  />
+                )}
+              </div>
+            </aside>
+          </div>
+        )}
 
             {/* ════ FOOTER: render + status ════ */}
+            {manifest && (
+              <>
             <div style={footerStyle}>
               {approval && <ApprovalBadge approval={approval} />}
               {delivery?.delivered && <DeliveryBadge delivery={delivery} videoName={templateId ?? jobId ?? ""} />}
@@ -1338,16 +1393,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                       "Render complete."
                     )}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRenderPhase(null);
-                      setRenderOutput(null);
-                    }}
-                    style={dismissBtnStyle}
-                  >
-                    Dismiss
-                  </button>
+                  <button type="button" onClick={() => { setRenderPhase(null); setRenderOutput(null); }} style={dismissBtnStyle}>Dismiss</button>
                 </div>
               )}
               {renderError && (
@@ -1362,65 +1408,16 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 </div>
               )}
               <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                {/* Ask AI — LLM-proposed edits (D4: the gate's caller). Slot tier
-                    (brick 14) + Structure tier (brick 15). */}
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", flex: "1 1 100%", minWidth: 280, marginBottom: "2px" }}>
                   <div style={{ display: "inline-flex", border: BORDER_SM, backgroundColor: COLORS.bg }}>
                     {(["slot", "structure"] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => setProposeMode(m)}
-                        style={{
-                          padding: "9px 10px",
-                          border: "none",
-                          cursor: "pointer",
-                          fontFamily: "inherit",
-                          fontSize: "0.65rem",
-                          fontWeight: 900,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.04em",
-                          backgroundColor: proposeMode === m ? COLORS.text : "transparent",
-                          color: proposeMode === m ? COLORS.bg : COLORS.textMuted,
-                        }}
-                      >
+                      <button key={m} type="button" onClick={() => setProposeMode(m)} style={{ padding: "9px 10px", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "0.65rem", fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.04em", backgroundColor: proposeMode === m ? COLORS.accent : "transparent", color: proposeMode === m ? "#fff" : COLORS.textMuted }}>
                         {m === "slot" ? "Slots" : "Structure"}
                       </button>
                     ))}
                   </div>
-                  <input
-                    value={proposePrompt}
-                    onChange={(e) => setProposePrompt(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        void handlePropose();
-                      }
-                    }}
-                    placeholder={
-                      proposeMode === "structure"
-                        ? "Ask AI to restructure — e.g. “shorten scene 3 to 5s”, “swap the drone shot”"
-                        : "Ask AI to edit slots — e.g. “deal status to AVAILABLE, warmer accent colour”"
-                    }
-                    disabled={isProposing}
-                    style={{ ...inputStyle, flex: 1, fontWeight: 500, textTransform: "none" }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handlePropose}
-                    disabled={isProposing || !proposePrompt.trim()}
-                    style={{
-                      ...renderBtnStyle,
-                      padding: "12px 18px",
-                      opacity: isProposing || !proposePrompt.trim() ? 0.7 : 1,
-                      cursor: isProposing || !proposePrompt.trim() ? "not-allowed" : "pointer",
-                    }}
-                    title={
-                      proposeMode === "structure"
-                        ? "Ask the AI to propose structural edits (durations/assets/copy) — you review the diff before it applies"
-                        : "Ask the AI to propose slot edits — you review the diff before it applies"
-                    }
-                  >
+                  <input value={proposePrompt} onChange={(e) => setProposePrompt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handlePropose(); } }} placeholder={proposeMode === "structure" ? "Ask AI to restructure — e.g. “shorten scene 3 to 5s”, “swap the drone shot”" : "Ask AI to edit slots — e.g. “deal status to AVAILABLE, warmer accent colour”"} disabled={isProposing} style={{ ...inputStyle, flex: 1, fontWeight: 500, textTransform: "none" }} />
+                  <button type="button" onClick={handlePropose} disabled={isProposing || !proposePrompt.trim()} style={{ ...renderBtnStyle, padding: "12px 18px", opacity: isProposing || !proposePrompt.trim() ? 0.7 : 1, cursor: isProposing || !proposePrompt.trim() ? "not-allowed" : "pointer" }} title={proposeMode === "structure" ? "Ask the AI to propose structural edits (durations/assets/copy) — you review the diff before it applies" : "Ask the AI to propose slot edits — you review the diff before it applies"}>
                     {isProposing ? (
                       <>
                         <Loader2 size={18} className="tl-spin" style={{ animation: "tl-spin 0.8s linear infinite" }} />
@@ -1720,19 +1717,18 @@ function TabButton({
         justifyContent: "center",
         gap: "8px",
         padding: "10px 20px",
-        border: BORDER_SM,
-        boxShadow: active ? SHADOW_SM : "none",
+        border: active ? `1px solid ${COLORS.accent}` : BORDER_SM,
+        boxShadow: "none",
         fontSize: "0.8rem",
-        fontWeight: 900,
+        fontWeight: active ? 900 : 700,
         textTransform: "uppercase",
         letterSpacing: "0.03em",
         cursor: "pointer",
         fontFamily: "inherit",
         flex: "1 1 120px",
-        backgroundColor: active ? COLORS.accent : COLORS.surface,
-        color: active ? "#fff" : COLORS.text,
-        transform: active ? "translate(-1px,-1px)" : "none",
-        transition: "all 80ms ease",
+        backgroundColor: active ? "rgba(79,70,229,0.1)" : COLORS.surface,
+        color: active ? COLORS.accent : COLORS.textMuted,
+        transition: "all 120ms ease",
       }}
     >
       {icon}
@@ -3127,7 +3123,7 @@ const overlayStyle: React.CSSProperties = {
 const modalContainerStyle: React.CSSProperties = {
   position: "relative",
   width: "100%",
-  maxWidth: "1100px",
+  maxWidth: "100%",
   maxHeight: "100vh",
   backgroundColor: COLORS.bg,
   border: "none",
@@ -3136,6 +3132,85 @@ const modalContainerStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",
+};
+
+/* ── 3-panel workspace (CapCut-style) ── */
+const workspaceStyle: React.CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  display: "flex",
+  flexDirection: "row",
+  overflow: "hidden",
+};
+const leftRailStyle: React.CSSProperties = {
+  width: "184px",
+  flexShrink: 0,
+  borderRight: BORDER,
+  backgroundColor: COLORS.surface,
+  display: "flex",
+  flexDirection: "column",
+  padding: "10px 8px",
+};
+const railHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  padding: "2px 6px 8px",
+  fontSize: "0.68rem",
+  fontWeight: 900,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  color: COLORS.textMuted,
+};
+const railSceneBtnStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "8px 8px",
+  border: "none",
+  borderRadius: "6px",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  textAlign: "left",
+  transition: "background 120ms ease",
+};
+const railAddStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "6px",
+  marginTop: "6px",
+  padding: "8px",
+  border: `1px dashed ${COLORS.border}`,
+  borderRadius: "6px",
+  backgroundColor: "transparent",
+  color: COLORS.textMuted,
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "0.7rem",
+  fontWeight: 700,
+};
+const centerColumnStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: "flex",
+  flexDirection: "column",
+  padding: "10px 12px",
+  gap: "10px",
+};
+const rightInspectorStyle: React.CSSProperties = {
+  width: "360px",
+  flexShrink: 0,
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+  borderLeft: BORDER,
+  backgroundColor: COLORS.surface,
+};
+const timelinePanelStyle: React.CSSProperties = {
+  flexShrink: 0,
+  backgroundColor: COLORS.surface,
+  padding: "8px 4px 2px",
 };
 
 const headerStyle: React.CSSProperties = {
@@ -3293,8 +3368,8 @@ const renderBtnStyle: React.CSSProperties = {
 const inspectBtnStyle: React.CSSProperties = {
   ...renderBtnStyle,
   padding: "12px 22px",
-  backgroundColor: COLORS.text,
-  color: COLORS.bg,
+  backgroundColor: COLORS.surfaceAlt,
+  color: COLORS.text,
 };
 
 const errorPillStyle: React.CSSProperties = {
@@ -3304,8 +3379,8 @@ const errorPillStyle: React.CSSProperties = {
   padding: "8px 12px",
   border: BORDER_SM,
   boxShadow: SHADOW_SM,
-  backgroundColor: "#ffe2e2",
-  color: "#b00020",
+  backgroundColor: "rgba(239,68,68,0.14)",
+  color: COLORS.danger,
   fontSize: "0.75rem",
   fontWeight: 800,
 };
@@ -3317,8 +3392,8 @@ const successPillStyle: React.CSSProperties = {
   padding: "8px 12px",
   border: BORDER_SM,
   boxShadow: SHADOW_SM,
-  backgroundColor: COLORS.accent2,
-  color: COLORS.text,
+  backgroundColor: "rgba(34,197,94,0.14)",
+  color: COLORS.success,
   fontSize: "0.75rem",
   fontWeight: 800,
 };
