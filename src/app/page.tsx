@@ -39,6 +39,10 @@ interface VideoJob {
   estimatedSeconds: number;
   resultUrl?: string;
   error?: string;
+  /** Farm video name (from the generate response) — used to register it as an editable template. */
+  renderName?: string;
+  /** The prompt/title (from the generate response) — used as the registered template name. */
+  title?: string;
 }
 
 interface GalleryVideo {
@@ -407,6 +411,16 @@ export default function Home() {
         if (data.status === "done") {
           setStep("result");
           fetchGallery();
+          // Bridge: register the generated video as an editable template (copy farm
+          // composition + assets into templates/<renderName>/) so the studio editor
+          // can open it. Best-effort — failures don't block the result screen.
+          if (current.renderName) {
+            fetch("/api/studio/register", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ videoName: current.renderName, title: current.title }),
+            }).catch(() => {});
+          }
           // Send email notification if user opted in
           if (emailSaved && emailNotify) {
             fetch("/api/notify-email", {
@@ -1982,6 +1996,7 @@ export default function Home() {
           brief={brief}
           templateId={brief._template_id}
           jobId={job.id}
+          videoName={job.renderName}
           onCreateNew={() => {
             // P0-1 fix: restart onboarding instead of reloading (which dumps to old app)
             setOnboardingKey(prev => prev + 1);
