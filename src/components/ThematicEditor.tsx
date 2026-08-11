@@ -48,6 +48,9 @@ interface ThematicEditorProps {
   brief: Record<string, string>;
   templateId?: string;
   jobId?: string;
+  /** Farm video name — when set, "Timeline Editor" opens the studio editor for it. */
+  videoName?: string;
+  onCreateNew?: () => void;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -179,7 +182,7 @@ function statusLabel(status?: string): string {
  * Component
  * ──────────────────────────────────────────────────────────────────────────── */
 
-export default function ThematicEditor({ videoUrl, brief, templateId, jobId }: ThematicEditorProps) {
+export default function ThematicEditor({ videoUrl, brief, templateId, jobId, videoName, onCreateNew }: ThematicEditorProps) {
   /* Active tab */
   const [activeTab, setActiveTab] = useState<"content" | "brand" | "export">("content");
 
@@ -364,7 +367,13 @@ export default function ThematicEditor({ videoUrl, brief, templateId, jobId }: T
     }
   };
 
-  const handleCreateNew = () => window.location.reload();
+  const handleCreateNew = () => {
+    if (onCreateNew) {
+      onCreateNew();
+    } else {
+      window.location.reload();
+    }
+  };
 
   const handleCopyShareLink = async () => {
     try {
@@ -641,7 +650,16 @@ export default function ThematicEditor({ videoUrl, brief, templateId, jobId }: T
             {jobId && (
               <button
                 type="button"
-                onClick={() => setShowTimeline(true)}
+                onClick={() => {
+                  // Bridge: open the studio editor for the generated video (registered as a
+                  // template on completion). Fall back to the inline modal only for legacy
+                  // template-based renders that have no videoName.
+                  if (videoName) {
+                    window.location.href = `/studio/editor?template=${encodeURIComponent(videoName)}`;
+                  } else {
+                    setShowTimeline(true);
+                  }
+                }}
                 style={actionButtonStyle({ variant: "secondary", flex: "1 1 200px" })}
               >
                 <Film size={18} />
