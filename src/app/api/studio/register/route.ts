@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { readdir, readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { getStore } from "@/lib/template-store/store";
+import { getCompositionBundle, getAssetBytes } from "@/lib/render-bridge";
 
 /**
  * POST /api/studio/register — bridge a freshly-generated video into the template
@@ -14,9 +16,9 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
  * minimal `template.json`. Scenes/aspect/duration are NOT synthesized here — the
  * store derives them from the HTML via `deriveScenes` at read time.
  *
- * Dev-only for now (Node filesystem access). On Workers (prod) the farm FS is
- * unreachable → 501; prod needs the relay to expose the composition + assets for
- * pull-into-R2 (documented follow-up).
+ * Dev copies from the farm filesystem directly. Prod (Workers) can't read the
+ * farm, so it PULLS the composition + assets from the relay (/video-composition,
+ * /video-asset) and writes them to the template store (R2).
  */
 const TEMPLATES_DIR = process.env.TEMPLATES_DIR ?? join(process.cwd(), "templates");
 const FARM_VIDEOS =
@@ -55,15 +57,44 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid or missing videoName" }, { status: 400 });
   }
 
-  // Prod (Workers) can't reach the farm filesystem — dev-only for now.
+  // Detect prod (Workers — relay-pull into R2) vs dev (Node — direct farm FS copy).
+  let onWorkers = false;
   try {
     getCloudflareContext();
-    return NextResponse.json(
-      { error: "registration requires the farm filesystem (dev); prod relay-pull not yet implemented" },
-      { status: 501 },
-    );
+    onWorkers = true;
   } catch {
-    // not on Workers — proceed
+    // not on Workers — dev path below
+  }
+
+  if (onWorkers) {
+    // PROD: the Worker can't read the farm FS, so pull the composition + assets
+    // from the relay and write them to the template store (R2).
+    const store = getStore();
+    const existing = await store.get(videoName);
+    if (existing?.family && existing.family !== "generated") {
+      return NextResponse.json({ id: videoName, ok: true, skipped: true, reason: "existing non-generated template" });
+    }
+    try {
+      const bundle = await getCompositionBundle(videoName);
+      if (!bundle) {
+        return NextResponse.json({ error: `composition not found on relay for "${videoName}"` }, { status: 404 });
+      }
+      const sidecar = {
+        family: "generated",
+        name: (body.title || videoName).slice(0, 80),
+        compositionPath: "index.html",
+        slots: [],
+      };
+      await store.writeFile(videoName, "template.json", JSON.stringify(sidecar, null, 2));
+      await store.writeFile(videoName, "index.html", bundle.html);
+      for (const rel of bundle.assets) {
+        const bytes = await getAssetBytes(videoName, rel);
+        await store.writeFile(videoName, rel, bytes);
+      }
+    } catch (e) {
+      return NextResponse.json({ error: `registration failed: ${(e as Error).message}` }, { status: 500 });
+    }
+    return NextResponse.json({ id: videoName, ok: true });
   }
 
   const farmDir = join(FARM_VIDEOS, videoName);
