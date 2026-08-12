@@ -37,6 +37,10 @@ const BORDER = "3px solid #0a0a0a";
 interface GsapTimeline {
   seek?(t: number): unknown;
   render?(): unknown;
+  play?(): unknown;
+  pause?(): unknown;
+  time?(t?: number): number;
+  duration?(): number;
 }
 
 const overlayLabel: CSSProperties = {
@@ -59,6 +63,8 @@ export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey 
   const [ready, setReady] = useState(false);
   const [scale, setScale] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
 
   const src = `/api/studio/template/${encodeURIComponent(templateId)}/preview/index.html`;
 
@@ -113,12 +119,56 @@ export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey 
     }, 100);
   };
 
+  // Play / pause the full composition timeline through ALL scenes.
+  const handlePlayPause = () => {
+    try {
+      const win = iframeRef.current?.contentWindow as unknown as
+        | { __timelines?: Record<string, GsapTimeline> }
+        | null;
+      const tl = win?.__timelines && Object.values(win.__timelines)[0];
+      if (!tl) return;
+      if (isPlaying) {
+        tl.pause?.();
+        setIsPlaying(false);
+      } else {
+        // Restore all isolated (hidden) elements so the full timeline shows them.
+        iframeRef.current?.contentDocument
+          ?.querySelectorAll("[data-start]")
+          .forEach((el) => { (el as HTMLElement).style.opacity = ""; });
+        tl.seek?.(0);
+        tl.play?.();
+        setProgress(0);
+        setIsPlaying(true);
+      }
+    } catch { /* ignore */ }
+  };
+
+  // Poll timeline progress during playback; auto-stop at the end.
+  useEffect(() => {
+    if (!isPlaying) return;
+    const iv = setInterval(() => {
+      try {
+        const win = iframeRef.current?.contentWindow as unknown as
+          | { __timelines?: Record<string, GsapTimeline> }
+          | null;
+        const tl = win?.__timelines && Object.values(win.__timelines)[0];
+        if (!tl) return;
+        const t = typeof tl.time === "function" ? tl.time() : 0;
+        const d = typeof tl.duration === "function" ? tl.duration() : 0;
+        if (d > 0) setProgress(Math.min(t / d, 1));
+        if (t >= d - 0.1) { tl.pause?.(); setIsPlaying(false); setProgress(0); }
+      } catch { /* ignore */ }
+    }, 200);
+    return () => clearInterval(iv);
+  }, [isPlaying]);
+
   // Seek to the selected scene's midpoint, then ISOLATE it: hide any element
   // whose [data-start]/[data-duration] window falls entirely outside this
   // scene. Seeking alone isn't enough — hand-crafted comps slide scenes and
   // leave loose clips (e.g. agent portraits) visible at every seek point.
   useEffect(() => {
     if (!ready || sceneStart == null) return;
+    if (isPlaying) return; // during playback, let the timeline control everything
     const seekTime = sceneStart + sceneDuration / 2;
     try {
       const win = iframeRef.current?.contentWindow as unknown as
@@ -147,7 +197,7 @@ export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey 
     } catch {
       // ignore — retries on the next change
     }
-  }, [ready, sceneStart, sceneDuration, reloadKey]);
+  }, [ready, sceneStart, sceneDuration, reloadKey, isPlaying]);
 
   const ratio = dims ? `${dims.w} / ${dims.h}` : "16 / 9";
 
@@ -201,6 +251,27 @@ export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey 
         />
         {!ready && !error && <div style={overlayLabel}>Rendering scene…</div>}
         {error && <div style={{ ...overlayLabel, color: "#ff8a8a" }}>{error}</div>}
+        {ready && (
+          <button
+            type="button"
+            onClick={handlePlayPause}
+            style={{
+              position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)",
+              width: 44, height: 44, borderRadius: "50%", border: "none",
+              background: "rgba(0,0,0,0.65)", color: "#fff", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              zIndex: 10, fontSize: "1.1rem", backdropFilter: "blur(4px)",
+            }}
+            title={isPlaying ? "Pause" : "Play full video"}
+          >
+            {isPlaying ? "⏸" : "▶"}
+          </button>
+        )}
+        {isPlaying && (
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 3, background: "rgba(255,255,255,0.2)", zIndex: 10 }}>
+            <div style={{ width: `${progress * 100}%`, height: "100%", background: "#4f46e5", transition: "width 200ms linear" }} />
+          </div>
+        )}
       </div>
     </div>
   );
