@@ -30,6 +30,8 @@ interface ScenePreviewProps {
   sceneDuration: number;
   /** Change to force the iframe to reload (e.g. after an edit persists). */
   reloadKey?: number;
+  /** Called during playback with the current timeline time (for active-scene tracking). */
+  onTimeUpdate?: (time: number) => void;
 }
 
 const BORDER = "3px solid #0a0a0a";
@@ -56,7 +58,7 @@ const overlayLabel: CSSProperties = {
   letterSpacing: "0.06em",
 };
 
-export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey = 0 }: ScenePreviewProps) {
+export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey = 0, onTimeUpdate }: ScenePreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
@@ -156,6 +158,7 @@ export function ScenePreview({ templateId, sceneStart, sceneDuration, reloadKey 
         const t = typeof tl.time === "function" ? tl.time() : 0;
         const d = typeof tl.duration === "function" ? tl.duration() : 0;
         if (d > 0) setProgress(Math.min(t / d, 1));
+        if (onTimeUpdate) onTimeUpdate(t);
         if (t >= d - 0.1) { tl.pause?.(); setIsPlaying(false); setProgress(0); }
       } catch { /* ignore */ }
     }, 200);

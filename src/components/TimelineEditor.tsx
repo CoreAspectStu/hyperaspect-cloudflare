@@ -589,6 +589,19 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
 
   // Bump to force the live preview to reload after edits persist (A1 wiring).
   const [previewVersion, setPreviewVersion] = useState(0);
+  // Help panel toggle.
+  const [showHelp, setShowHelp] = useState(false);
+
+  // During playback, track which scene is active (from timeline time → cumulative durations).
+  const handleTimeUpdate = useCallback((t: number) => {
+    if (!manifest) return;
+    let start = 0;
+    for (let i = 0; i < manifest.beats.length; i++) {
+      const dur = manifest.beats[i].duration;
+      if (t >= start && t < start + dur) { setSelectedBeat(i); return; }
+      start += dur;
+    }
+  }, [manifest]);
 
   // Window for the selected scene: cumulative start + duration. Passed to the
   // live preview so it can seek to mid-scene AND isolate just this scene.
@@ -1176,6 +1189,22 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
   const overlay = (
     <div style={overlayStyle}>
       <style>{cssGlobal}</style>
+      {showHelp && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100000, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setShowHelp(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: COLORS.surface, borderRadius: 12, padding: 28, maxWidth: 460, maxHeight: "80vh", overflowY: "auto", border: BORDER, color: COLORS.text, fontSize: "0.85rem", lineHeight: 1.6 }}>
+            <div style={{ fontSize: "1.2rem", fontWeight: 800, marginBottom: 16 }}>Editor Guide</div>
+            <div style={{ marginBottom: 10 }}><strong>▶ Play</strong> — watch the full video. Click scenes in the timeline to jump.</div>
+            <div style={{ marginBottom: 10 }}><strong>Timeline</strong> — click a scene block to select + preview it. Active scene highlights during playback.</div>
+            <div style={{ marginBottom: 10 }}><strong>Scenes tab</strong> — edit a scene&apos;s text/duration (local; use <em>Ask AI → Structure</em> to persist changes).</div>
+            <div style={{ marginBottom: 10 }}><strong>Slots tab</strong> ✅ — edit per-client variables (address, status, agents) → <strong>Save</strong> → preview updates live.</div>
+            <div style={{ marginBottom: 10, color: COLORS.textMuted }}><strong>Style / Audio</strong> — generate-time settings; don&apos;t affect existing templates.</div>
+            <div style={{ marginBottom: 10 }}><strong>Ask AI</strong> — type an instruction (Slots or Structure) → AI proposes a diff → Accept.</div>
+            <div style={{ marginBottom: 10 }}><strong>Run Gate</strong> — lint → render → vision-QA → Approve → Deliver.</div>
+            <div style={{ marginBottom: 16 }}><strong>Deliver</strong> — ship the approved mp4 + get a share link.</div>
+            <button type="button" onClick={() => setShowHelp(false)} style={{ ...closeBtnBase, backgroundColor: COLORS.accent, color: "#fff" }}>Got it</button>
+          </div>
+        </div>
+      )}
       <div style={modalContainerStyle}>
         {/* ── Header bar ── */}
         <div style={headerStyle}>
@@ -1196,19 +1225,24 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isRerendering}
-            style={{
-              ...closeBtnBase,
-              opacity: isRerendering ? 0.5 : 1,
-              cursor: isRerendering ? "not-allowed" : "pointer",
-            }}
-            aria-label="Close editor"
-          >
-            <X size={20} strokeWidth={2.5} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button type="button" onClick={() => setShowHelp(true)} style={{ ...closeBtnBase, backgroundColor: COLORS.surfaceAlt, color: COLORS.text }} title="Help — what do the buttons do?" aria-label="Help">
+              <span style={{ fontSize: "1.1rem", fontWeight: 900 }}>?</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isRerendering}
+              style={{
+                ...closeBtnBase,
+                opacity: isRerendering ? 0.5 : 1,
+                cursor: isRerendering ? "not-allowed" : "pointer",
+              }}
+              aria-label="Close editor"
+            >
+              <X size={20} strokeWidth={2.5} />
+            </button>
+          </div>
         </div>
 
         {/* ── Load warning ── */}
@@ -1238,6 +1272,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
                 sceneStart={previewScene?.start ?? null}
                 sceneDuration={previewScene?.duration ?? 4}
                 reloadKey={previewVersion}
+                onTimeUpdate={handleTimeUpdate}
               />
               <div style={timelinePanelStyle}>
                 <div style={{ ...panelHeaderStyle, marginBottom: "6px" }}>
