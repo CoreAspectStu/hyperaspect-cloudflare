@@ -1231,40 +1231,6 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
         {/* ── Main content: 3-panel workspace ── */}
         {manifest && (
           <div style={workspaceStyle}>
-            {/* ════ LEFT RAIL: scene list ════ */}
-            <aside style={leftRailStyle}>
-              <div style={railHeaderStyle}><Layers size={14} /> Scenes</div>
-              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: "2px" }}>
-                {manifest.beats.map((beat, i) => {
-                  const isSelected = selectedBeat === i;
-                  const icon = LAYOUT_OPTIONS.find((l) => l.value === beat.layout)?.icon || "🎬";
-                  return (
-                    <button
-                      key={beat.id}
-                      type="button"
-                      onClick={() => { setSelectedBeat(i); setActiveTab("beats"); }}
-                      style={{
-                        ...railSceneBtnStyle,
-                        backgroundColor: isSelected ? "rgba(79,70,229,0.1)" : "transparent",
-                        color: isSelected ? COLORS.accent : COLORS.text,
-                        borderLeft: `3px solid ${isSelected ? COLORS.accent : "transparent"}`,
-                      }}
-                      title={`${beat.headline} — ${beat.duration}s`}
-                    >
-                      <span style={{ fontSize: "1rem", lineHeight: 1 }}>{icon}</span>
-                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700, fontSize: "0.72rem" }}>
-                        {i + 1}. {beat.headline}
-                      </span>
-                      <span style={{ fontSize: "0.62rem", color: COLORS.textMuted }}>{beat.duration}s</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <button type="button" onClick={addBeat} style={railAddStyle} title="Add scene">
-                <Plus size={14} /> Add scene
-              </button>
-            </aside>
-
             {/* ════ CENTER: preview + timeline strip ════ */}
             <section style={centerColumnStyle}>
               <ScenePreview
@@ -1319,7 +1285,7 @@ export default function TimelineEditor({ jobId, templateId, onClose }: TimelineE
             {/* ════ RIGHT: inspector (tabs + content) ════ */}
             <aside style={rightInspectorStyle}>
               <div style={tabBarStyle}>
-                <TabButton active={activeTab === "beats"} onClick={() => setActiveTab("beats")} icon={<Layers size={16} />} label="Beats" />
+                <TabButton active={activeTab === "beats"} onClick={() => setActiveTab("beats")} icon={<Layers size={16} />} label="Scenes" />
                 <TabButton active={activeTab === "style"} onClick={() => setActiveTab("style")} icon={<Palette size={16} />} label="Style" />
                 <TabButton active={activeTab === "audio"} onClick={() => setActiveTab("audio")} icon={<Music size={16} />} label="Audio" />
                 {manifest.slots?.length ? (
@@ -2634,7 +2600,7 @@ function BeatsTab({
           );
         })}
         <button type="button" onClick={onAddBeat} style={addBeatBtnStyle}>
-          <Plus size={15} /> Add Beat
+          <Plus size={15} /> Add Scene
         </button>
       </div>
 
