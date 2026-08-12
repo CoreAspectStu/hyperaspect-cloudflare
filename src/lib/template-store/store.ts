@@ -26,6 +26,12 @@ export interface TemplateStore {
    */
   readFile(id: string, rel: string): Promise<Uint8Array | null>;
   /**
+   * Write an arbitrary file (e.g. `assets/foo.png`, `template.json`) relative to
+   * the template dir. Used by the generated-video register path to materialize a
+   * template (composition + assets + sidecar). Creates parent dirs as needed.
+   */
+  writeFile(id: string, rel: string, body: string | ArrayBuffer): Promise<void>;
+  /**
    * Persist deterministic slot-value edits (D4). Stored as a per-template
    * `values.json` overlay until the Video model lands.
    */
@@ -98,8 +104,8 @@ interface R2BucketLike {
 // node:fs is dev-only. Under nodejs_compat the import resolves in the Workers
 // bundle too, but FsTemplateStore is never instantiated there (getStore() returns
 // the R2 store), so these never run in prod.
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
 
 const TEMPLATES_DIR =
   process.env.TEMPLATES_DIR ?? join(process.cwd(), "templates");
@@ -182,6 +188,12 @@ export class FsTemplateStore implements TemplateStore {
     }
   }
 
+  async writeFile(id: string, rel: string, body: string | ArrayBuffer): Promise<void> {
+    const abs = join(this.dir, id, rel);
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, typeof body === "string" ? body : Buffer.from(body));
+  }
+
   async saveValues(id: string, values: Record<string, string | number>): Promise<void> {
     await writeFile(join(this.dir, id, "values.json"), JSON.stringify(values, null, 2), "utf8");
   }
@@ -248,6 +260,10 @@ export class R2TemplateStore implements TemplateStore {
     const body = await this.bucket.get(`${R2_PREFIX}${id}/${rel}`);
     if (!body) return null;
     return new Uint8Array(await body.arrayBuffer());
+  }
+
+  async writeFile(id: string, rel: string, body: string | ArrayBuffer): Promise<void> {
+    await this.bucket.put(`${R2_PREFIX}${id}/${rel}`, body);
   }
 
   /** Read compositionPath from the sidecar (default "index.html") without a full get(). */

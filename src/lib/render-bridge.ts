@@ -152,6 +152,55 @@ export async function getTemplateHtml(videoName: string): Promise<string | null>
   return (parsed as { html?: string }).html ?? null;
 }
 
+/**
+ * GET /video-composition/:id — the RESOLVED composition HTML (`videos/<id>/index.html`)
+ * PLUS the list of asset paths under `assets/`. Used by the generated-video register
+ * path to pull a farm composition into the template store (prod, where the Worker can't
+ * read the farm FS). Returns null (404) if the composition isn't found.
+ */
+export async function getCompositionBundle(
+  videoName: string,
+): Promise<{ html: string; assets: string[] } | null> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${RENDER_BASE}/video-composition/${encodeURIComponent(videoName)}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  if (resp.status === 404) return null;
+  const parsed = await parseBody(resp);
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for composition ${videoName}`, parsed);
+  }
+  const b = parsed as { html?: string; assets?: string[] };
+  if (!b.html) {
+    throw new RelayError(502, `relay returned no composition html for ${videoName}`, parsed);
+  }
+  return { html: b.html, assets: Array.isArray(b.assets) ? b.assets : [] };
+}
+
+/**
+ * GET /video-asset/:id/<rel> — a single asset file as raw bytes. Used by the register
+ * path to copy farm assets into the template store.
+ */
+export async function getAssetBytes(videoName: string, rel: string): Promise<ArrayBuffer> {
+  let resp: Response;
+  try {
+    const encRel = rel.split("/").map(encodeURIComponent).join("/");
+    resp = await fetch(`${RENDER_BASE}/video-asset/${encodeURIComponent(videoName)}/${encRel}`, {
+      headers: { authorization: bearer() },
+    });
+  } catch (e) {
+    throw new RelayError(502, `render relay unreachable: ${(e as Error).message}`);
+  }
+  if (!resp.ok) {
+    throw new RelayError(resp.status, `relay ${resp.status} for asset ${videoName}/${rel}`);
+  }
+  return await resp.arrayBuffer();
+}
+
 /** Recompose the composition with `body.variables` (mustache), then enqueue. */
 async function rerenderAndEnqueue(
   videoName: string,
