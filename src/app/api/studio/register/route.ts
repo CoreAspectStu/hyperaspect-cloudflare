@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getStore } from "@/lib/template-store/store";
 import { getCompositionBundle, getAssetBytes } from "@/lib/render-bridge";
+import { slotifyComposition } from "@/lib/template-store/slotify";
+import type { Slot } from "@/lib/template-store/types";
 
 /**
  * POST /api/studio/register — bridge a freshly-generated video into the template
@@ -45,6 +47,23 @@ async function copyDir(src: string, dest: string): Promise<void> {
   }
 }
 
+/**
+ * Declare per-scene text slots for a generated composition + tokenize its text
+ * into `{{slotId}}` mustache tokens. The tokenized HTML is stored as the
+ * composition so the editor's Slots tab + live preview work (the preview route
+ * recomposes `{{token}}`s against slot defaults/values). Wrapped so registration
+ * NEVER fails on slot-ification: on any error, fall back to the literal HTML +
+ * an empty slot list (the pre-slot-ify behaviour).
+ */
+function slotifyOrFallback(html: string): { slots: Slot[]; html: string } {
+  try {
+    const { slots, tokenizedHtml } = slotifyComposition(html);
+    return { slots, html: tokenizedHtml };
+  } catch {
+    return { slots: [], html };
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: { videoName?: string; title?: string };
   try {
@@ -79,14 +98,15 @@ export async function POST(req: NextRequest) {
       if (!bundle) {
         return NextResponse.json({ error: `composition not found on relay for "${videoName}"` }, { status: 404 });
       }
+      const { slots, html: tokenizedHtml } = slotifyOrFallback(bundle.html);
       const sidecar = {
         family: "generated",
         name: (body.title || videoName).slice(0, 80),
         compositionPath: "index.html",
-        slots: [],
+        slots,
       };
       await store.writeFile(videoName, "template.json", JSON.stringify(sidecar, null, 2));
-      await store.writeFile(videoName, "index.html", bundle.html);
+      await store.writeFile(videoName, "index.html", tokenizedHtml);
       for (const rel of bundle.assets) {
         const bytes = await getAssetBytes(videoName, rel);
         await store.writeFile(videoName, rel, bytes);
@@ -119,7 +139,8 @@ export async function POST(req: NextRequest) {
 
   try {
     await mkdir(tplDir, { recursive: true });
-    await copyFile(farmHtml, join(tplDir, "index.html"));
+    const { slots, html: tokenizedHtml } = slotifyOrFallback(await readFile(farmHtml, "utf8"));
+    await writeFile(join(tplDir, "index.html"), tokenizedHtml, "utf8");
     try {
       await copyDir(join(farmDir, "assets"), join(tplDir, "assets"));
     } catch {
@@ -129,7 +150,7 @@ export async function POST(req: NextRequest) {
       family: "generated",
       name: (body.title || videoName).slice(0, 80),
       compositionPath: "index.html",
-      slots: [],
+      slots,
     };
     await writeFile(join(tplDir, "template.json"), JSON.stringify(sidecar, null, 2), "utf8");
   } catch (e) {

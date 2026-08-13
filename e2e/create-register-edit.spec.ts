@@ -54,12 +54,20 @@ test("create → register → edit a generated video", async ({ request, page })
   expect(tpl.scenes.length).toBeGreaterThan(0);
   expect(tpl.family).toBe("generated");
 
+  // 4b. Generated videos are slot-ified: per-scene text slots are declared so the
+  // Slots tab + live preview work (not just Beats/Structure).
+  expect(Array.isArray(tpl.slots)).toBeTruthy();
+  expect(tpl.slots.length).toBeGreaterThan(0);
+
   // 5. The editor opens it with a live preview + the real scenes, no errors.
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(`/studio/editor?template=${encodeURIComponent(videoName)}`, { waitUntil: "load" });
   await expect(page.locator('iframe[title="Scene preview"]')).toBeVisible();
   await expect(page.locator('button:has-text("Scene")').first()).toBeVisible();
+  // The Slots tab is present (generated videos now declare text slots). Match
+  // the tab's "Slots (N)" label, not the Ask-AI mode toggle's bare "Slots".
+  await expect(page.getByRole("button", { name: /^Slots \(\d+\)/ })).toBeVisible();
   expect(errors).toEqual([]);
 
   // 6. Interact: selecting a later scene seeks the GSAP timeline forward.
