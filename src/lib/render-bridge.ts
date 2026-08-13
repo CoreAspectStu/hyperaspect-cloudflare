@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Slot } from "@/lib/template-store/types";
 
 /**
  * Render-bridge client — thin wrappers over the public render relay
@@ -107,26 +108,64 @@ export async function enqueueRender(
 }
 
 /**
- * POST /video-stage/:id { html, templateHtml? } — stage a patched composition
- * (brick 15 structural edits). The relay writes `html` to videos/<id>/index.html
- * (the render target). If `templateHtml` is provided it is ALSO written to the
- * `_templates/<id>/index.html` mustache source (durability: so a later slot
- * rerender — which recomposes from `_templates` — preserves the structural
- * change). The app owns the projection; the relay just writes the files.
+ * POST /video-stage/:id { html, templateHtml?, manifest? } — stage a patched
+ * composition (brick 15 structural edits). The relay writes `html` to
+ * videos/<id>/index.html (the render target). If `templateHtml` is provided it is
+ * ALSO written to the `_templates/<id>/index.html` mustache source (durability: so
+ * a later slot rerender — which recomposes from `_templates` — preserves the
+ * structural change). If `manifest` is provided it is written to
+ * videos/<id>/manifest.json (render-binding for generated videos). The app owns
+ * the projection; the relay just writes the files.
  */
 export async function stageComposition(
   videoName: string,
   html: string,
   templateHtml?: string,
-): Promise<{ ok: boolean; templateWritten?: boolean }> {
+  manifest?: Record<string, unknown>,
+): Promise<{ ok: boolean; templateWritten?: boolean; manifestWritten?: boolean }> {
   const { resp, parsed } = await postJson(`/video-stage/${encodeURIComponent(videoName)}`, {
     html,
     ...(templateHtml ? { templateHtml } : {}),
+    ...(manifest ? { manifest } : {}),
   });
   if (!resp.ok) {
     throw new RelayError(resp.status, `relay ${resp.status} staging ${videoName}`, parsed);
   }
-  return parsed as { ok: boolean; templateWritten?: boolean };
+  return parsed as { ok: boolean; templateWritten?: boolean; manifestWritten?: boolean };
+}
+
+/** Replace `{{ slot }}` tokens with values (mirrors the preview route's resolver). */
+function resolveTokens(html: string, values: Record<string, string | number>): string {
+  if (!html.includes("{{")) return html;
+  return html.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_m, key: string) => {
+    const v = values[key];
+    return v == null ? "" : String(v);
+  });
+}
+
+/**
+ * Establish mustache render-binding for a generated video on the farm: write the
+ * tokenized `_templates/<id>/index.html` source + a `manifest.json`
+ * (`html_template` + slot defaults) via /video-stage, so /video-rerender recomposes
+ * `{{slotId}}` tokens from the saved slot values (forwarded as `variables`) at
+ * render time — a Run-Gate render then reflects slot edits.
+ *
+ * Best-effort: callers swallow errors (the Slots tab + live preview work without
+ * binding; only Run-Gate renders need it, and an un-bound video still renders via
+ * the /video-render fallback).
+ */
+export async function stageBinding(
+  videoName: string,
+  { tokenizedHtml, slots }: { tokenizedHtml: string; slots: Slot[] },
+): Promise<{ ok: boolean; templateWritten?: boolean; manifestWritten?: boolean }> {
+  const variables: Record<string, string> = {};
+  for (const s of slots) variables[s.id] = String(s.default ?? "");
+  const manifest: Record<string, unknown> = { html_template: videoName, variables };
+  // resolvedHtml = the tokenized source with defaults substituted (== the original
+  // composition). Staged as the render target so /video-stage's required `html`
+  // field is a no-op visually (defaults already equal the original text).
+  const resolvedHtml = resolveTokens(tokenizedHtml, variables);
+  return stageComposition(videoName, resolvedHtml, tokenizedHtml, manifest);
 }
 
 /**

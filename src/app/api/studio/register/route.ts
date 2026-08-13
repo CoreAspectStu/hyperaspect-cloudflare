@@ -3,7 +3,7 @@ import { readdir, readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getStore } from "@/lib/template-store/store";
-import { getCompositionBundle, getAssetBytes } from "@/lib/render-bridge";
+import { getCompositionBundle, getAssetBytes, stageBinding } from "@/lib/render-bridge";
 import { slotifyComposition } from "@/lib/template-store/slotify";
 import type { Slot } from "@/lib/template-store/types";
 
@@ -111,6 +111,16 @@ export async function POST(req: NextRequest) {
         const bytes = await getAssetBytes(videoName, rel);
         await store.writeFile(videoName, rel, bytes);
       }
+      // Best-effort: establish mustache render-binding on the farm (slot edits →
+      // Run-Gate render reflects them). Non-fatal — preview works without it, and
+      // an un-bound video still renders via the /video-render fallback.
+      if (slots.length) {
+        try {
+          await stageBinding(videoName, { tokenizedHtml, slots });
+        } catch {
+          /* relay unreachable — binding retried on the next slotify/register */
+        }
+      }
     } catch (e) {
       return NextResponse.json({ error: `registration failed: ${(e as Error).message}` }, { status: 500 });
     }
@@ -153,6 +163,14 @@ export async function POST(req: NextRequest) {
       slots,
     };
     await writeFile(join(tplDir, "template.json"), JSON.stringify(sidecar, null, 2), "utf8");
+    // Best-effort: establish mustache render-binding on the farm (see prod branch).
+    if (slots.length) {
+      try {
+        await stageBinding(videoName, { tokenizedHtml, slots });
+      } catch {
+        /* relay unreachable — binding retried on the next slotify/register */
+      }
+    }
   } catch (e) {
     return NextResponse.json({ error: `registration failed: ${(e as Error).message}` }, { status: 500 });
   }

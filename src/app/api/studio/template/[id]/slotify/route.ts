@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/template-store/store";
+import { stageBinding } from "@/lib/render-bridge";
 import { slotifyComposition } from "@/lib/template-store/slotify";
 import type { Slot } from "@/lib/template-store/types";
 
@@ -52,6 +53,18 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 
   await store.saveComposition(id, result.tokenizedHtml);
   await store.writeFile(id, "template.json", JSON.stringify(sidecar, null, 2));
+
+  // Best-effort: establish mustache render-binding on the farm so a Run-Gate render
+  // reflects slot edits (backfills generated videos registered before this). The
+  // tokenized source just saved IS the mustache source; the slot defaults are the
+  // manifest variable defaults. Non-fatal — preview works without it.
+  if (slots.length) {
+    try {
+      await stageBinding(id, { tokenizedHtml: result.tokenizedHtml, slots });
+    } catch {
+      /* relay unreachable — binding retried on the next slotify/register */
+    }
+  }
 
   return NextResponse.json({ ok: true, id, slots: slots.length });
 }
